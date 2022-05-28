@@ -1,0 +1,11 @@
+[package]
+name = "zmaxion_utils"
+version = "0.1.0"
+edition = "2021"
+description = "A collection of utils for Zmaxion"
+repository = "https://github.com/Stock84-dev/zmaxion"
+license = "MIT OR Apache-2.0"
+keywords = ["zmaxion"]
+
+
+[dependencies]

@@ -1,0 +1,7 @@
+[package]
+name = "zmaxion_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }

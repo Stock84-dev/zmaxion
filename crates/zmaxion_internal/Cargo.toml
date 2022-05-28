@@ -1,0 +1,19 @@
+[package]
+name = "zmaxion_internal"
+version = "0.1.0"
+edition = "2021"
+description = "Stream processing framework with ECS"
+repository = "https://github.com/Stock84-dev/zmaxion"
+license = "MIT OR Apache-2.0"
+categories = ["concurrency", "web-programming"]
+keywords = ["stream", "processing", "engine", "data", "pipeline", "zmaxion"]
+
+[features]
+dynamic = ["zmaxion_core/dynamic"]
+
+[dependencies]
+zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
+zmaxion_utils = { path = "../zmaxion_utils", version = "0.1.0" }
+zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }
+zmaxion_app = { path = "../zmaxion_app", version = "0.1.0" }
+zmaxion_plugins = { path = "../zmaxion_plugins", version = "0.1.0" }

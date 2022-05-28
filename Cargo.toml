@@ -1,0 +1,25 @@
+[package]
+name = "zmaxion"
+version = "0.1.0"
+edition = "2021"
+exclude = [".github/**/*", "crates/**/*"]
+readme = "README.md"
+description = "Stream processing framework with ECS"
+repository = "https://github.com/Stock84-dev/zmaxion"
+license = "MIT OR Apache-2.0"
+categories = ["concurrency", "web-programming"]
+keywords = ["stream", "processing", "engine", "data", "pipeline", "zmaxion"]
+
+[workspace]
+members = ["crates/*"]
+
+[features]
+dynamic = ["zmaxion_dylib", "zmaxion_internal/dynamic"]
+
+[dependencies]
+zmaxion_internal = { path = "crates/zmaxion_internal", version = "0.1.0", default-features = false }
+zmaxion_dylib = { path = "crates/zmaxion_dylib", version = "0.1.0", default-features = false, optional = true }
+
+[[example]]
+name = "pipe_showcase"
+path = "examples/pipe_showcase.rs"

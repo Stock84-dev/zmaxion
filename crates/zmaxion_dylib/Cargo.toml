@@ -1,0 +1,14 @@
+[package]
+name = "zmaxion_dylib"
+version = "0.1.0"
+edition = "2021"
+description = "Force the Zmaxion Engine to be dynamically linked for faster linking"
+repository = "https://github.com/Stock84-dev/zmaxion"
+license = "MIT OR Apache-2.0"
+keywords = ["zmaxion"]
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+zmaxion_internal = { path = "../zmaxion_internal", version = "0.1.0", default-features = false }

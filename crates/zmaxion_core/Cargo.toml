@@ -1,0 +1,29 @@
+[package]
+name = "zmaxion_core"
+version = "0.1.0"
+edition = "2021"
+description = "Provides core functionality for Zmaxion"
+repository = "https://github.com/Stock84-dev/zmaxion"
+license = "MIT OR Apache-2.0"
+keywords = ["zmaxion"]
+
+[features]
+rt_tokio = ["zmaxion_rt/rt_tokio"]
+dynamic = ["bevy/dynamic"]
+
+[dependencies]
+zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
+zmaxion_utils = { path = "../zmaxion_utils", version = "0.1.0" }
+bevy = { version = "0.6.0", default-features = false }
+thiserror = "1.0.24"
+anyhow = "1.0.57"
+async-trait = "0.1.51"
+cache-padded = "1.2.0"
+spin = "0.9.2"
+parking_lot = { version = "0.11.2" }
+serde = "1.0.130"
+smallvec = "1.8.0"
+priomutex = "0.3.1"
+serde_yaml = "0.8.20"
+paste = "1.0.5"
+futures-util = "0.3.17"
