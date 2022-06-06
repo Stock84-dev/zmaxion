@@ -1,6 +1,8 @@
 use std::any::{Any, TypeId};
 
-use zmaxion_core::{bevy::utils::HashMap, prelude::*};
+use bevy_utils::HashMap;
+use zmaxion_core::models::TopicSpawnerArgs;
+use zmaxion_utils::prelude::*;
 
 use crate::prelude::*;
 

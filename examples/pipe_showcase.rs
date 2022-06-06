@@ -4,7 +4,7 @@ use zmaxion::prelude::*;
 use zmaxion_internal::{
     core::{
         bevy::{ecs::system::SystemState, log::LogPlugin},
-        definitions::{
+        models::{
             AsyncSupport, Idempotence, TopicAccess, TopicConfig, TopicLifetime, TransactionSupport,
         },
         pipe::PipeConfig,

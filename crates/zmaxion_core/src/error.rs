@@ -1,33 +1,3 @@
-use std::{
-    fmt::Display,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-};
-
-pub use anyhow::{anyhow, bail, ensure, format_err, Chain, Context, Error, Result as AnyResult};
-use async_trait::async_trait;
-use bevy::ecs::{
-    archetype::Archetype,
-    system::{
-        FunctionSystem, InputMarker, SystemMeta, SystemParam, SystemParamFetch,
-        SystemParamFunction, SystemParamState,
-    },
-};
-use thiserror::Error;
-
-use crate::{
-    pipe::{
-        param::{ParamBuilder, PipeParam, PipeParamFetch, PipeParamState, TopicParamKind},
-        PipeConfig,
-    },
-    pipeline::SpawnPipelineInner,
-    prelude::*,
-    resources::LogErrorsSynchronously,
-    topic::{messages::SpawnTopicInner, MemTopic, TopicWriterState},
-};
-
 #[derive(Error, Debug)]
 #[error("{0:#?}")]
 pub enum ZmaxionError {
@@ -386,20 +356,5 @@ pub(crate) fn assert_config_provided<T: 'static>(config: Option<T>) -> T {
             )
         }
         Some(config) => config,
-    }
-}
-
-pub trait OptionIntoResultExt {
-    type Nullable;
-    fn some(self) -> Result<Self::Nullable, crate::error::Error>;
-}
-
-impl<T> OptionIntoResultExt for Option<T> {
-    type Nullable = T;
-
-    fn some(self) -> Result<Self::Nullable, crate::error::Error> {
-        self.ok_or(anyhow::anyhow!(
-            "called `Option::unwrap()` on a `None` value"
-        ))
     }
 }

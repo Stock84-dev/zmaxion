@@ -5,42 +5,32 @@ use std::{
     sync::Arc,
 };
 
+use bevy_app::prelude::*;
+use bevy_diagnostic::{DiagnosticsPlugin, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
+use bevy_ecs::{
+    prelude::*,
+    schedule::IntoSystemDescriptor,
+    system::{Resource, SystemMeta, SystemState},
+};
+use bevy_reflect::{GetTypeRegistration, TypeRegistryArc};
+use bevy_utils::HashSet;
 use zmaxion_core::{
-    bevy::{
-        diagnostic::{DiagnosticsPlugin, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
-        ecs::{
-            schedule::IntoSystemDescriptor,
-            system::{Resource, SystemMeta, SystemState},
-        },
-        reflect::{GetTypeRegistration, TypeRegistryArc},
-        utils::HashSet,
-    },
     components::Name,
-    definitions::{PipeKind, StaticEstimations},
-    error::{handle_errors, ErrorEvent},
-    pipe::{
-        components::PipeComponent,
-        factory::{IntoPipeFactory, PipeFactoryContainer},
-        messages::AddSystem,
-        resources::PipeDefs,
-    },
-    prelude::*,
-    sync::PrioMutex,
-    topic::{
-        resources::TopicDefinitions, MemTopic, ResTopicReaderState, TopicDefinition,
-        TopicReaderState, TopicSpawnerArgs,
-    },
+    models::{PipeKind, StaticEstimations},
 };
+use zmaxion_utils::prelude::*;
 
-use crate::{
-    prelude::*,
-    resources::{Exit, LoadedConnectors, Reschedule},
-};
+use crate::prelude::*;
 
 mod builder;
 
 pub use builder::AppBuilder;
-use zmaxion_core::pipeline::messages::SpawnPipeline;
+use zmaxion_core::{
+    messages::{AddSystem, SpawnPipeline},
+    resources::{Exit, Reschedule},
+};
+use zmaxion_topic::prelude::{GlobalSystemReader, GlobalSystemWriter};
+use zmaxion_utils::prelude::PrioMutex;
 
 pub enum Schedules {
     Pre = 0,
@@ -85,16 +75,16 @@ impl Zmaxion {
 
     pub fn spawn_pipeline(&self, config: SpawnPipeline) {
         let mut world = self.world.lock(0).unwrap();
-        let mut system_state: SystemState<ResTopicWriter<SpawnPipeline>> =
+        let mut system_state: SystemState<GlobalSystemWriter<SpawnPipeline>> =
             SystemState::new(&mut *world);
-        let writer = system_state.get_mut(&mut *world);
+        let mut writer = system_state.get_mut(&mut *world);
         writer.write(config);
     }
 
     pub fn run(&mut self) {
         let topic = {
             let mut world = self.world.lock(0).unwrap();
-            ResTopicReaderState::<AddSystem>::from(&*world)
+            GlobalSystemReaderState::<AddSystem>::from(&*world)
         };
         self.startup();
         let mut epoch = 0;
@@ -121,23 +111,24 @@ impl Zmaxion {
                     }
                 }
             } else {
-                let mut system_state: SystemState<(Res<PipeDefs>, Query<(&PipeComponent, &Name)>)> =
-                    SystemState::new(&mut *world);
-                let (defs, query) = system_state.get_mut(&mut *world);
-                if let Some(mut commands) = topic.try_read() {
-                    for system in commands.read_all() {
-                        let (component, name) = query.get(system.entity).unwrap();
-                        if let Some(system) = component.factory.system() {
-                            match &defs.0.get(name.0.as_str()).unwrap().kind {
-                                PipeKind::Bevy => {
-                                    self.schedules[Schedules::Main as usize]
-                                        .add_system_to_stage(CoreStage::Update, system);
-                                }
-                                Async => {}
+                let mut system_state: SystemState<(
+                    GlobalSystemReader<SpawnPipeline>,
+                    Res<PipeDefs>,
+                    Query<(&PipeComponent, &Name)>,
+                )> = SystemState::new(&mut *world);
+                let (reader, defs, query) = system_state.get_mut(&mut *world);
+                for system in reader.read() {
+                    let (component, name) = query.get(system.entity).unwrap();
+                    if let Some(system) = component.factory.system() {
+                        match &defs.0.get(name.0.as_str()).unwrap().kind {
+                            PipeKind::Bevy => {
+                                self.schedules[Schedules::Main as usize]
+                                    .add_system_to_stage(CoreStage::Update, system);
                             }
+                            Async => {}
                         }
                     }
-                }; // first drop temp variables from if statement then outer block
+                }
             }
             if world.remove_resource::<Exit>().is_some() {
                 break;
@@ -250,44 +241,3 @@ mod tests {
         app.run();
     }
 }
-
-// pipe could have a scale function which is called before spawning a pipeline. We could use that
-// to determine how many pipe instances to run and set correct arguments.
-
-// To spawn a workflow we send id to a topic.
-// Then it gets picked up and moved to a priority topics, low, medium, high
-// When reading workflows to spawn we read from high priority first
-//
-// Constraint: We cannot spawn a pipeline accross multiple nodes.
-//
-// TODO: implement state
-// TODO: implement reader ack
-// TODO: implement consumer groups to MemTopic<T>
-// TODO: autoscale inside one node
-// spawn the whole pipeline even the shared ones
-// we can track execution time before/after
-// if pipe can be executed concurrently and writers support out of order execution then try scale
-// add one pipe and let it execute, compare execution speed
-// if speed1 >= speed2 * 2 then keep it
-// if we use wasi containers then we could keep track of memory consumption
-// TODO: distributed autoscale
-// we spawn a whole pipeline on one node, each pipe can be spawned on multiple nodes if it can be
-// executed in parallel, if it crosses to another node then we upgrade topic
-// if topic is in memory we don't store it
-// if resource usage is too high, we can evict pipelines/pipe
-// TODO: execution where data is located
-// having higher replication factor makes things faster because we don't need to move data as much
-// TODO: wasi containers
-
-// visualization
-// s3 -> load -> topic(mem)
-// topic -> decompress -> topic # this one is stateless and should be merged up for best performance
-// topic -> filter -> topic # also stateless
-// topic -> draw_when_batched
-
-// range_generator -> t -> backtest -> t -> compress -> t -> save_to_s3
-//                                       -> filter   -> t -> draw_when_batched -> t -> save_to_s3
-// if reader is statefull, attach generation to writer message
-// pass all metadata through topics
-// once a message has been procesed at the end of all pipe groups ack with stateful reader
-// this requires that a pipe can only send one message per pipe invocation

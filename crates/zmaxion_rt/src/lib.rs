@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use bevy::prelude::*;
+use bevy_ecs::prelude::*;
 use pin_project::pin_project;
 
 #[cfg(not(any(feature = "rt_tokio")))]
@@ -8,10 +8,10 @@ compile_error!("one of the features ['rt_tokio'] must be enabled");
 
 #[cfg(feature = "rt_tokio")]
 mod rt_tokio;
+pub use async_mutex::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
 #[cfg(feature = "rt_tokio")]
 pub use tokio;
 
-#[doc(hidden)]
 pub mod prelude {
     #[cfg(feature = "rt_tokio")]
     pub use crate::rt_tokio::*;

@@ -1,25 +1,13 @@
 use std::{mem::swap, sync::Arc};
 
+use bevy_reflect::{GetTypeRegistration, TypeRegistryArc};
 pub use zmaxion_core::prelude::*;
 use zmaxion_core::{
-    bevy::{
-        ecs::{
-            schedule::IntoSystemDescriptor,
-            system::{Resource, SystemParam, SystemParamFetch, SystemState},
-        },
-        reflect::{GetTypeRegistration, TypeRegistryArc},
-    },
-    definitions::StaticEstimations,
-    error::handle_errors,
-    pipe::{
-        factory::{IntoPipeFactory, PipeFactoryContainer},
-        resources::PipeDefs,
-    },
-    pipeline::messages::SpawnPipeline,
+    models::{StaticEstimations, TopicSpawnerArgs},
     resources::LoadedConnectors,
-    sync::{PrioMutex, PrioMutexGuard},
-    topic::{resources::TopicDefinitions, MemTopic, TopicDefinition, TopicSpawnerArgs},
 };
+use zmaxion_topic::SystemTopic;
+use zmaxion_utils::prelude::*;
 
 use crate::app::Schedules;
 pub use crate::prelude::*;
@@ -90,10 +78,10 @@ impl<'a> AppBuilder<'a> {
         self
     }
 
-    pub fn add_topic<T: Resource>(&mut self) -> &mut Self {
+    pub fn add_system_topic<T: Resource>(&mut self) -> &mut Self {
         self.register_topic::<T>();
-        let id = self.world.get_resource::<GlobalEntity>().unwrap().0;
-        let topic = MemTopic::<T>::new();
+        let id = **self.world.get_resource::<GlobalEntity>().unwrap();
+        let topic = SystemTopic::<T>::new();
         self.world.entity_mut(id).insert(topic);
         self
     }

@@ -2,8 +2,8 @@ use std::{borrow::Cow, sync::Arc};
 
 use zmaxion_app::prelude::*;
 use zmaxion_core::{
-    definitions::TopicAccess,
     error::{Errors, SpawnError, TopicSpawnError},
+    models::TopicAccess,
     pipe::{messages::SpawnPipe, SpawnPipeInner},
     pipeline::components::PipeIdRelToPipeline,
     prelude::*,
@@ -25,12 +25,12 @@ impl Plugin for TopicPlugin {
         builder
             .insert_resource(Topics(Default::default()))
             .insert_resource(TopicDefinitions(Default::default()))
-            .add_topic::<SpawnTopics>()
-            .add_topic::<TopicsSpawning>()
-            .add_topic::<TopicsSpawned>()
-            .add_topic::<TopicSpawning>()
-            .add_topic::<TopicSpawned>()
-            .add_topic::<DespawnTopic>()
+            .add_system_topic::<SpawnTopics>()
+            .add_system_topic::<TopicsSpawning>()
+            .add_system_topic::<TopicsSpawned>()
+            .add_system_topic::<TopicSpawning>()
+            .add_system_topic::<TopicSpawned>()
+            .add_system_topic::<DespawnTopic>()
             .add_system(spawn_topics)
             .add_system(despawn_topics)
             .add_system(relay_topic_events)

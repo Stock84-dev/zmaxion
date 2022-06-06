@@ -11,7 +11,7 @@ categories = ["concurrency", "web-programming"]
 keywords = ["stream", "processing", "engine", "data", "pipeline", "zmaxion"]
 
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "benches/"]
 
 [features]
 dynamic = ["zmaxion_dylib", "zmaxion_internal/dynamic"]

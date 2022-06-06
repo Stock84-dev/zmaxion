@@ -79,7 +79,7 @@ impl<T: Resource> MemTopic<T> {
         debug_assert_ne!(n, 0)
     }
 
-    pub async fn read<'a>(&'a self, reader_id: usize) -> LocalTopicReadGuard<'a, T> {
+    pub async fn read<'a>(&'a self, reader_id: usize) -> TopicReadGuard<'a, T> {
         let reader_cursor;
         {
             let guard = self.0.reader_cursors.read();
@@ -94,7 +94,7 @@ impl<T: Resource> MemTopic<T> {
             // wait for new events
             self.0.notify.notified().await;
         }
-        LocalTopicReadGuard {
+        TopicReadGuard {
             reader_cursor,
             reader_id,
             topic: self,
@@ -102,7 +102,7 @@ impl<T: Resource> MemTopic<T> {
         }
     }
 
-    pub fn try_read<'a>(&'a self, reader_id: usize) -> Option<LocalTopicReadGuard<'a, T>> {
+    pub fn try_read<'a>(&'a self, reader_id: usize) -> Option<TopicReadGuard<'a, T>> {
         let reader_cursor;
         {
             let guard = self.0.reader_cursors.read();
@@ -116,7 +116,7 @@ impl<T: Resource> MemTopic<T> {
         if reader_cursor == self.0.n_total_readable_events.load(Ordering::SeqCst) {
             return None;
         }
-        Some(LocalTopicReadGuard {
+        Some(TopicReadGuard {
             reader_cursor,
             reader_id,
             topic: self,
@@ -198,14 +198,14 @@ impl<T: Resource> Clone for MemTopic<T> {
     }
 }
 
-pub struct LocalTopicReadGuard<'a, T: Resource> {
+pub struct TopicReadGuard<'a, T: Resource> {
     reader_id: usize,
     reader_cursor: u64,
     topic: &'a MemTopic<T>,
     guard: RwLockReadGuard<'a, Vec<T>>,
 }
 
-impl<'a, T: Resource> LocalTopicReadGuard<'a, T> {
+impl<'a, T: Resource> TopicReadGuard<'a, T> {
     pub fn read_all(&mut self) -> &[T] {
         //        debug!("{:#?}", &self.topic.0 as *const _);
         //        debug!("{:#?}", self.topic.0.reader_cursors);

@@ -1,0 +1,17 @@
+[package]
+name = "zmaxion_topic"
+version = "0.1.0"
+edition = "2021"
+description = "Provides data structures and functionality for Zmaxion's event driven services"
+repository = "https://github.com/Stock84-dev/zmaxion"
+license = "MIT OR Apache-2.0"
+keywords = ["zmaxion", "topic", "event", "consumer", "provider"]
+
+
+[dependencies]
+zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }
+zmaxion_param = { path = "../zmaxion_param", version = "0.1.0" }
+zmaxion_utils = { path = "../zmaxion_utils", version = "0.1.0" }
+zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
+async-trait = "0.1.51"
+cache-padded = "1.2.0"

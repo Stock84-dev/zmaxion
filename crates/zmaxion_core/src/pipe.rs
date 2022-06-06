@@ -25,8 +25,8 @@ use paste::paste;
 use smallvec::SmallVec;
 
 use crate::{
-    definitions::PipeKind,
     error::{ErrorEvent, Errors, ErrorsState, PipeParamError},
+    models::PipeKind,
     pipeline::SpawnPipelineInner,
     prelude::*,
     topic::TopicId,
@@ -35,85 +35,9 @@ use crate::{
 pub mod factory;
 pub mod param;
 
-pub mod components {
-    use std::sync::Arc;
-
-    use smallvec::SmallVec;
-
-    use crate::{
-        pipe::{Pipe, SpawnPipeInner},
-        prelude::*,
-    };
-
-    #[derive(Component)]
-    pub struct PipeTask(pub Task<AnyResult<Box<dyn Pipe>>>);
-    #[derive(Component)]
-    pub struct PipeComponent {
-        pub factory: Box<dyn Pipe>,
-    }
-    #[derive(Component)]
-    pub struct SystemData {
-        pub reader_topics: SmallVec<[Entity; 4]>,
-        pub writer_topics: SmallVec<[Entity; 4]>,
-    }
-    #[derive(Component)]
-    pub struct SpawnPipeComponent(pub Arc<SpawnPipeInner>);
-}
-
-pub mod messages {
-    use std::sync::Arc;
-
-    use bevy::prelude::Entity;
-
-    use crate::pipe::SpawnPipeInner;
-
-    pub struct SpawnPipe(pub Arc<SpawnPipeInner>);
-    pub struct PipeSpawning(pub Arc<SpawnPipeInner>);
-    pub struct PipeSpawned(pub Arc<SpawnPipeInner>);
-    pub struct AddSystem {
-        pub entity: Entity,
-    }
-    pub struct DespawnPipe {
-        pub entity: Entity,
-    }
-    pub struct LoadPipeState {
-        pub state_generation: i64,
-        pub state_name: String,
-        pub inner: Arc<SpawnPipeInner>,
-    }
-    #[derive(Clone)]
-    pub struct PipeStateLoaded {
-        pub inner: Arc<SpawnPipeInner>,
-        pub state: Option<Vec<u8>>,
-    }
-}
-
-pub mod resources {
-    use bevy::{prelude::Entity, utils::HashMap};
-
-    use crate::pipe::factory::PipeFactoryContainer;
-
+mod resources {
+    use crate::{pipe::factory::PipeFactoryContainer, prelude::*};
     pub struct PipeDefs(pub HashMap<&'static str, PipeFactoryContainer>);
-    pub struct PipeNameToEntity(pub HashMap<String, Entity>);
-}
-
-#[derive(Debug, Clone)]
-pub struct PipeConfig {
-    pub name: String,
-    pub args: Vec<u8>,
-    pub reader_topics: SmallVec<[String; 4]>,
-    pub writer_topics: SmallVec<[String; 4]>,
-}
-
-#[derive(Debug)]
-pub struct SpawnPipeInner {
-    pub pipeline_id: Entity,
-    pub pipe: Entity,
-    pub config: Arc<PipeConfig>,
-    pub pipeline: Arc<SpawnPipelineInner>,
-    pub topic_ids: Arc<Vec<Vec<TopicId<'static>>>>,
-    pub pipe_id_rel_to_pipeline: usize,
-    pub state_generation: u64,
 }
 
 #[async_trait]
@@ -160,15 +84,6 @@ impl<Fetch, Params, F, Fut, Out> Drop for AsyncPipe<Params, Fetch, F, Fut, Out> 
 impl<Params, Fetch, F, Fut, Out> Pipe for AsyncPipe<Params, Fetch, F, Fut, Out> {
     fn system(&self) -> Option<SystemDescriptor> {
         None
-    }
-}
-
-pub trait PipeObserver {
-    /// Called before the pipe gets executed
-    fn pipe_executing(&mut self) {
-    }
-    /// Called after the pipe has executed
-    fn pipe_executed(&mut self) {
     }
 }
 
@@ -318,14 +233,11 @@ macro_rules! impl_pipe (
                         $(*paste! {[<x_ $param>]} = paste! {[<self_ $param>]}.configure();)*
                 });
                 $(
-                    // rustc fails to infere types somehow
-                    let handler = ConfigurableSystem::<AnyResult<$out>, (), (Errors,), _>::config(
-                        crate::error::handle_errors::<$out>,
-                        |x| {
-                            x.0 = self.errors_state.clone();
-                        }
-                    );
-                    let system = system.chain(handler);
+                    let errors_state = self.errors_state.clone();
+                    let system = system.chain(move |result: In<AnyResult<Out>>| {
+                        let errors = errors_state.get_param();
+                        crate::error::handle_errors::<$out>(result, errors_state)
+                    });
                 )?
                 Some(system.into_descriptor())
             }

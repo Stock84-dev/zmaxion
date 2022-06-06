@@ -1,0 +1,17 @@
+[package]
+name = "zmaxion_derive"
+version = "0.1.0"
+edition = "2021"
+description = "Provides derive implementations for Zmaxion"
+repository = "https://github.com/Stock84-dev/zmaxion"
+license = "MIT OR Apache-2.0"
+keywords = ["zmaxion", "derive", "macro"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+zmaxion_macro_utils = { path = "../zmaxion_macro_utils", version = "0.1.0" }
+
+quote = "1.0"
+syn = { version = "1.0", features = ["full"] }

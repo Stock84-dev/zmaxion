@@ -9,10 +9,13 @@ categories = ["concurrency", "web-programming"]
 keywords = ["stream", "processing", "engine", "data", "pipeline", "zmaxion"]
 
 [features]
-dynamic = ["zmaxion_core/dynamic"]
+dynamic = []
 
 [dependencies]
 zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
+zmaxion_param = { path = "../zmaxion_param", version = "0.1.0" }
+zmaxion_topic = { path = "../zmaxion_topic", version = "0.1.0" }
+zmaxion_pipe = { path = "../zmaxion_pipe", version = "0.1.0" }
 zmaxion_utils = { path = "../zmaxion_utils", version = "0.1.0" }
 zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }
 zmaxion_app = { path = "../zmaxion_app", version = "0.1.0" }

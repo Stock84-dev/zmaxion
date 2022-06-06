@@ -1,21 +1,16 @@
 use std::sync::Arc;
 
-use bevy::ecs::system::{SystemMeta, SystemParam, SystemParamState, SystemState};
+use bevy::ecs::system::{SystemMeta, SystemParamState, SystemState};
 use zmaxion_app::prelude::*;
 use zmaxion_core::{
-    components::Generation,
-    definitions::{
+    components::{Generation, Pipeline, PipelineState},
+    messages::{
+        DespawnPipe, DespawnPipeline, PipelineSpawned, PipelineSpawning, SpawnPipeline, SpawnTopics,
+    },
+    models::config::{
         AsyncSupport, Idempotence, TopicAccess, TopicConfig, TopicLifetime, TransactionSupport,
     },
-    error::ErrorEvent,
-    pipe::messages::DespawnPipe,
-    pipeline::{
-        components::Pipeline,
-        messages::{DespawnPipeline, PipelineSpawned, PipelineSpawning, SpawnPipeline},
-    },
     prelude::*,
-    state::components::PipelineState,
-    topic::{messages::SpawnTopics, MemTopic, TopicReaderState},
 };
 
 pub struct PipelinePlugin;
@@ -23,25 +18,25 @@ pub struct PipelinePlugin;
 impl Plugin for PipelinePlugin {
     fn build<'a, 'b>(self: Box<Self>, builder: &'b mut AppBuilder<'a>) -> &'b mut AppBuilder<'a> {
         builder
-            .add_topic::<SpawnPipeline>()
-            .add_topic::<PipelineSpawning>()
-            .add_topic::<PipelineSpawned>()
-            .add_topic::<DespawnPipeline>()
+            .add_system_topic::<SpawnPipeline>()
+            .add_system_topic::<PipelineSpawning>()
+            .add_system_topic::<PipelineSpawned>()
+            .add_system_topic::<DespawnPipeline>()
             .add_system(relay_pipeline_events)
     }
 }
 
 fn relay_pipeline_events(
-    read_pipeline_spawned: ResTopicReader<PipelineSpawned>,
-    topics_spawner: ResTopicWriter<SpawnTopics>,
-    read_pipeline_spawning: ResTopicReader<PipelineSpawning>,
-    write_pipeline_spawned: ResTopicWriter<PipelineSpawned>,
-    read_spawn_pipeline: ResTopicReader<SpawnPipeline>,
-    write_pipeline_spawning: ResTopicWriter<PipelineSpawning>,
-    errors: ResTopicReader<ErrorEvent>,
-    write_despawn_pipeline: ResTopicWriter<DespawnPipeline>,
-    read_despawn_pipeline: ResTopicReader<DespawnPipeline>,
-    despawn_pipe: ResTopicWriter<DespawnPipe>,
+    read_pipeline_spawned: GlobalSystemReader<PipelineSpawned>,
+    topics_spawner: GlobalSystemWriter<SpawnTopics>,
+    read_pipeline_spawning: GlobalSystemReader<PipelineSpawning>,
+    write_pipeline_spawned: GlobalSystemWriter<PipelineSpawned>,
+    read_spawn_pipeline: GlobalSystemReader<SpawnPipeline>,
+    write_pipeline_spawning: GlobalSystemWriter<PipelineSpawning>,
+    errors: GlobalSystemReader<ErrorEvent>,
+    write_despawn_pipeline: GlobalSystemWriter<DespawnPipeline>,
+    read_despawn_pipeline: GlobalSystemReader<DespawnPipeline>,
+    despawn_pipe: GlobalSystemWriter<DespawnPipe>,
     pipelines: Query<&Pipeline>,
     children: Query<&Children>,
     mut commands: Commands,

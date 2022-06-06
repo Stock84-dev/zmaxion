@@ -8,14 +8,13 @@ pub mod prelude {
 }
 
 use bevy::reflect::TypeRegistryArc;
-use zmaxion_app::{prelude::*, resources::WorldArc};
+use zmaxion_app::prelude::*;
 use zmaxion_core::{
     components::Name,
-    error::ErrorEvent,
     prelude::*,
-    topic::{MemTopic, TopicReaderState},
+    resources::{LogErrorsSynchronously, WorldArc},
 };
-use zmaxion_core::resources::LogErrorsSynchronously;
+use zmaxion_rt::Runtime;
 
 use crate::state::StatePlugin;
 pub use crate::{pipe::PipePlugin, pipeline::PipelinePlugin, topic::TopicPlugin};
@@ -45,7 +44,9 @@ pub struct ErrorPlugin;
 impl Plugin for ErrorPlugin {
     fn build<'a, 'b>(self: Box<Self>, builder: &'b mut AppBuilder<'a>) -> &'b mut AppBuilder<'a> {
         let id = builder.world.get_resource::<GlobalEntity>().unwrap().0;
-        builder.add_topic::<ErrorEvent>().insert_resource(LogErrorsSynchronously(Default::default()));
+        builder
+            .add_system_topic::<ErrorEvent>()
+            .insert_resource(LogErrorsSynchronously(Default::default()));
         let topic = builder
             .world
             .entity(id)

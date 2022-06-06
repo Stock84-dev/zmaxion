@@ -1,18 +1,25 @@
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use bevy::ecs::archetype::Archetype;
-use bevy::ecs::system::{Resource, SystemMeta, SystemParam, SystemParamFetch, SystemParamState};
-use bevy::prelude::*;
-
-use crate::error::{assert_config_provided, AnyResult};
-use crate::pipe::param::{
-    ParamBuilder, PipeParam, PipeParamFetch, PipeParamState, TopicParam, TopicParamKind,
+use bevy::{
+    ecs::{
+        archetype::Archetype,
+        system::{Resource, SystemMeta, SystemParam, SystemParamFetch, SystemParamState},
+    },
+    prelude::*,
 };
-use crate::pipe::PipeObserver;
-use crate::resources::GlobalEntity;
-use crate::topic::mem::{LocalTopicReadGuard, MemTopic};
+
+use crate::{
+    error::{assert_config_provided, AnyResult},
+    pipe::{
+        param::{
+            ParamBuilder, PipeParam, PipeParamFetch, PipeParamState, TopicParam, TopicParamKind,
+        },
+        PipeObserver,
+    },
+    resources::GlobalEntity,
+    topic::mem::{MemTopic, TopicReadGuard},
+};
 
 #[derive(Component)]
 pub struct TopicReaderState<T: Resource> {
@@ -22,27 +29,29 @@ pub struct TopicReaderState<T: Resource> {
 }
 
 impl<T: Resource> TopicReaderState<T> {
-    pub async fn read<'a>(&'a self) -> LocalTopicReadGuard<'a, T> {
+    pub async fn read<'a>(&'a self) -> TopicReadGuard<'a, T> {
         self.topic.read(self.reader_id).await
     }
 
-    pub fn try_read<'a>(&'a self) -> Option<LocalTopicReadGuard<'a, T>> {
+    pub fn try_read<'a>(&'a self) -> Option<TopicReadGuard<'a, T>> {
         self.topic.try_read(self.reader_id)
     }
 }
 
-impl<T: Resource> PipeObserver for TopicReaderState<T> {}
+impl<T: Resource> PipeObserver for TopicReaderState<T> {
+}
 
 #[async_trait]
 impl<T: Resource> PipeParamState for TopicReaderState<T> {
     type Args = ();
+
     const KIND: TopicParamKind = TopicParamKind::Reader;
 
     async fn new(builder: ParamBuilder<()>) -> AnyResult<Self>
     where
         Self: Sized,
     {
-        Ok(builder.get_reader()?)
+        unimplemented!()
     }
 
     fn configure(&self) -> Option<Self>
@@ -59,11 +68,17 @@ impl<T: Resource> PipeParamState for TopicReaderState<T> {
 
 unsafe impl<T: Resource> SystemParamState for TopicReaderState<T> {
     type Config = Option<Self>;
+
     fn init(world: &mut World, system_meta: &mut SystemMeta, config: Self::Config) -> Self {
         assert_config_provided(config)
     }
-    fn new_archetype(&mut self, archetype: &Archetype, system_meta: &mut SystemMeta) {}
-    fn apply(&mut self, world: &mut World) {}
+
+    fn new_archetype(&mut self, archetype: &Archetype, system_meta: &mut SystemMeta) {
+    }
+
+    fn apply(&mut self, world: &mut World) {
+    }
+
     fn default_config() -> Self::Config {
         None
     }
@@ -71,6 +86,7 @@ unsafe impl<T: Resource> SystemParamState for TopicReaderState<T> {
 
 impl<'w, 's, T: Resource> SystemParamFetch<'w, 's> for TopicReaderState<T> {
     type Item = TopicReader<'s, T>;
+
     unsafe fn get_param(
         state: &'s mut Self,
         _system_meta: &SystemMeta,
@@ -114,11 +130,11 @@ pub struct TopicReader<'s, T: Resource> {
 }
 
 impl<'s, T: Resource> TopicReader<'s, T> {
-    pub async fn read<'a>(&'a self) -> LocalTopicReadGuard<'a, T> {
+    pub async fn read<'a>(&'a self) -> TopicReadGuard<'a, T> {
         self.state.topic.read(self.state.reader_id).await
     }
 
-    pub fn try_read<'a>(&'a self) -> Option<LocalTopicReadGuard<'a, T>> {
+    pub fn try_read<'a>(&'a self) -> Option<TopicReadGuard<'a, T>> {
         self.state.topic.try_read(self.state.reader_id)
     }
 }
@@ -171,28 +187,35 @@ pub struct ResTopicReaderState<T: Resource> {
 }
 
 impl<T: Resource> ResTopicReaderState<T> {
-    pub async fn read<'a>(&'a self) -> LocalTopicReadGuard<'a, T> {
+    pub async fn read<'a>(&'a self) -> TopicReadGuard<'a, T> {
         self.state.topic.read(self.state.reader_id).await
     }
 
-    pub fn try_read<'a>(&'a self) -> Option<LocalTopicReadGuard<'a, T>> {
+    pub fn try_read<'a>(&'a self) -> Option<TopicReadGuard<'a, T>> {
         self.state.topic.try_read(self.state.reader_id)
     }
 }
 
 unsafe impl<T: Resource> SystemParamState for ResTopicReaderState<T> {
     type Config = Option<Self>;
+
     fn init(world: &mut World, system_meta: &mut SystemMeta, config: Self::Config) -> Self {
         ResTopicReaderState::from(&*world)
     }
-    fn new_archetype(&mut self, archetype: &Archetype, system_meta: &mut SystemMeta) {}
+
+    fn new_archetype(&mut self, archetype: &Archetype, system_meta: &mut SystemMeta) {
+    }
+
     fn default_config() -> Self::Config {
         None
     }
-    fn apply(&mut self, world: &mut World) {}
+
+    fn apply(&mut self, world: &mut World) {
+    }
 }
 impl<'w, 's, T: Resource> SystemParamFetch<'w, 's> for ResTopicReaderState<T> {
     type Item = ResTopicReader<'s, T>;
+
     unsafe fn get_param(
         state: &'s mut Self,
         _system_meta: &SystemMeta,
@@ -204,11 +227,11 @@ impl<'w, 's, T: Resource> SystemParamFetch<'w, 's> for ResTopicReaderState<T> {
 }
 
 impl<'s, T: Resource> ResTopicReader<'s, T> {
-    pub async fn read<'a>(&'a self) -> LocalTopicReadGuard<'a, T> {
+    pub async fn read<'a>(&'a self) -> TopicReadGuard<'a, T> {
         self.state.read().await
     }
 
-    pub fn try_read<'a>(&'a self) -> Option<LocalTopicReadGuard<'a, T>> {
+    pub fn try_read<'a>(&'a self) -> Option<TopicReadGuard<'a, T>> {
         self.state.try_read()
     }
 }
@@ -226,6 +249,7 @@ impl<T: Resource> From<&World> for ResTopicReaderState<T> {
 #[async_trait]
 impl<T: Resource> PipeParamState for ResTopicReaderState<T> {
     type Args = ();
+
     const KIND: TopicParamKind = TopicParamKind::Reader;
 
     async fn new(builder: ParamBuilder<()>) -> AnyResult<Self>

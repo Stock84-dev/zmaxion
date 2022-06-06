@@ -9,4 +9,3 @@ edition = "2021"
 zmaxion_app = { path = "../zmaxion_app", version = "0.1.0" }
 zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }
 zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
-bevy = { version = "0.6.0", default-features = false }

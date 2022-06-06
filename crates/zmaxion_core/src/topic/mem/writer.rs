@@ -1,18 +1,25 @@
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use bevy::ecs::archetype::Archetype;
-use bevy::ecs::system::{Resource, SystemMeta, SystemParam, SystemParamFetch, SystemParamState};
-use bevy::prelude::*;
-
-use crate::error::{assert_config_provided, AnyResult};
-use crate::pipe::param::{
-    ParamBuilder, PipeParam, PipeParamFetch, PipeParamState, TopicParam, TopicParamKind,
+use bevy::{
+    ecs::{
+        archetype::Archetype,
+        system::{Resource, SystemMeta, SystemParam, SystemParamFetch, SystemParamState},
+    },
+    prelude::*,
 };
-use crate::pipe::PipeObserver;
-use crate::prelude::GlobalEntity;
-use crate::topic::mem::MemTopic;
+
+use crate::{
+    error::{assert_config_provided, AnyResult},
+    pipe::{
+        param::{
+            ParamBuilder, PipeParam, PipeParamFetch, PipeParamState, TopicParam, TopicParamKind,
+        },
+        PipeObserver,
+    },
+    prelude::GlobalEntity,
+    topic::mem::MemTopic,
+};
 
 #[derive(Component)]
 pub struct TopicWriterState<T: Resource> {
@@ -30,18 +37,20 @@ impl<T: Resource> TopicWriterState<T> {
     }
 }
 
-impl<T: Resource> PipeObserver for TopicWriterState<T> {}
+impl<T: Resource> PipeObserver for TopicWriterState<T> {
+}
 
 #[async_trait]
 impl<T: Resource> PipeParamState for TopicWriterState<T> {
     type Args = ();
+
     const KIND: TopicParamKind = TopicParamKind::Writer;
 
     async fn new(builder: ParamBuilder<()>) -> AnyResult<Self>
     where
         Self: Sized,
     {
-        Ok(builder.get_writer()?)
+        unimplemented!()
     }
 
     fn configure(&self) -> Option<Self>
@@ -58,17 +67,24 @@ impl<T: Resource> PipeParamState for TopicWriterState<T> {
 
 unsafe impl<T: Resource> SystemParamState for TopicWriterState<T> {
     type Config = Option<Self>;
+
     fn init(world: &mut World, system_meta: &mut SystemMeta, config: Self::Config) -> Self {
         assert_config_provided(config)
     }
-    fn new_archetype(&mut self, archetype: &Archetype, system_meta: &mut SystemMeta) {}
-    fn apply(&mut self, world: &mut World) {}
+
+    fn new_archetype(&mut self, archetype: &Archetype, system_meta: &mut SystemMeta) {
+    }
+
+    fn apply(&mut self, world: &mut World) {
+    }
+
     fn default_config() -> Self::Config {
         None
     }
 }
 impl<'w, 's, T: Resource> SystemParamFetch<'w, 's> for TopicWriterState<T> {
     type Item = TopicWriter<'s, T>;
+
     unsafe fn get_param(
         state: &'s mut Self,
         _system_meta: &SystemMeta,
@@ -175,19 +191,25 @@ impl<T: Resource> Clone for ResTopicWriterState<T> {
 
 unsafe impl<T: Resource> SystemParamState for ResTopicWriterState<T> {
     type Config = Option<Self>;
+
     fn init(world: &mut World, system_meta: &mut SystemMeta, config: Self::Config) -> Self {
         ResTopicWriterState::from(&*world)
     }
-    fn new_archetype(&mut self, archetype: &Archetype, system_meta: &mut SystemMeta) {}
+
+    fn new_archetype(&mut self, archetype: &Archetype, system_meta: &mut SystemMeta) {
+    }
+
     fn default_config() -> Self::Config {
         None
     }
+
     fn apply(&mut self, world: &mut World) {
         self.state.apply(world)
     }
 }
 impl<'w, 's, T: Resource> SystemParamFetch<'w, 's> for ResTopicWriterState<T> {
     type Item = ResTopicWriter<'s, T>;
+
     unsafe fn get_param(
         state: &'s mut Self,
         _system_meta: &SystemMeta,
@@ -233,6 +255,7 @@ impl<'s, T: Resource> PipeParamFetch<'s> for TopicWriterState<T> {
 #[async_trait]
 impl<T: Resource> PipeParamState for ResTopicWriterState<T> {
     type Args = ();
+
     const KIND: TopicParamKind = TopicParamKind::Writer;
 
     async fn new(builder: ParamBuilder<()>) -> AnyResult<Self>

@@ -1,14 +1,18 @@
-use crate::error::PipeParamError;
-use crate::pipe::factory::PipeFactoryArgs;
-use crate::pipe::SpawnPipeInner;
-use crate::prelude::*;
-use crate::sync::{PrioMutex, PrioMutexGuard};
-use crate::topic::{MemTopic, TopicReaderState, TopicWriterState};
+use std::{io::Read, sync::Arc};
+
 use async_trait::async_trait;
-use bevy::ecs::system::Resource;
 use serde::de::DeserializeOwned;
-use std::io::Read;
-use std::sync::Arc;
+
+use crate::{
+    error::PipeParamError,
+    pipe::{factory::PipeFactoryArgs, SpawnPipeInner},
+    prelude::{
+        bevy_ecs::system::{SystemMeta, SystemParam, SystemParamFetch, SystemParamState},
+        *,
+    },
+    sync::{PrioMutex, PrioMutexGuard},
+    topic::{MemTopic, TopicReaderState, TopicWriterState},
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum TopicParam {
@@ -32,6 +36,7 @@ pub struct ParamBuilder<Args> {
     command: Arc<SpawnPipeInner>,
     arg_i: usize,
     args: Option<AnyResult<Args>>,
+    defined_param_kind: TopicParamKind,
 }
 
 impl<Args: DeserializeOwned> ParamBuilder<Args> {
@@ -40,6 +45,7 @@ impl<Args: DeserializeOwned> ParamBuilder<Args> {
         arg_i: usize,
         topic: Option<TopicParam>,
         args: R,
+        defined_param_kind: TopicParamKind,
     ) -> Self {
         let args = serde_yaml::from_reader(args);
         ParamBuilder {
@@ -50,6 +56,7 @@ impl<Args: DeserializeOwned> ParamBuilder<Args> {
             command: factory_args.config.clone(),
             arg_i,
             args: Some(args.map_err(|e| e.into())),
+            defined_param_kind,
         }
     }
 }
@@ -84,41 +91,33 @@ impl<Args: DeserializeOwned> ParamBuilder<Args> {
     //        }
     //    }
 
-    pub fn get_reader<T: Resource>(&self) -> Result<TopicReaderState<T>, PipeParamError> {
-        //        debug!("{:#?}", self.config.name);
-        //        debug!("{:#?}", self.topic);
-        let id = match self.topic {
-            Some(TopicParam::Reader(id)) => id,
-            _ => {
+    pub fn get_topic_id(&self, reader_name: &str) -> Result<Entity, PipeParamError> {
+        Ok(match self.defined_param_kind {
+            TopicParamKind::None => {
                 return Err(PipeParamError::InvalidPipeParam(
                     self.arg_i,
-                    TopicReader::<T>::type_name().into(),
+                    reader_name.into(),
                 ))
             }
-        };
-        let world = self.world.lock(0).unwrap();
-        //        error!("{:#?}", id);
-        //        error!("{:#?}", T::id_name());
-        let topic = world.get::<MemTopic<T>>(id).unwrap();
-        Ok(TopicReaderState::from(topic.clone()))
-    }
-
-    pub fn get_writer<T: Resource>(&self) -> Result<TopicWriterState<T>, PipeParamError> {
-        //        debug!("{:#?}", self.topic);
-        let id = match self.topic {
-            Some(TopicParam::Writer(id)) => id,
-            _ => {
-                return Err(PipeParamError::InvalidPipeParam(
-                    self.arg_i,
-                    TopicWriter::<T>::type_name().into(),
-                ));
-            }
-        };
-        //        error!("{:#?}", id);
-        //        error!("{:#?}", T::id_name());
-        let world = self.world.lock(0).unwrap();
-        let topic = world.get::<MemTopic<T>>(id).unwrap();
-        Ok(TopicWriterState::from(topic.clone()))
+            TopicParamKind::Reader => match self.topic {
+                Some(TopicParam::Reader(id)) => id,
+                _ => {
+                    return Err(PipeParamError::InvalidPipeParam(
+                        self.arg_i,
+                        reader_name.into(),
+                    ))
+                }
+            },
+            TopicParamKind::Writer => match self.topic {
+                Some(TopicParam::Writer(id)) => id,
+                _ => {
+                    return Err(PipeParamError::InvalidPipeParam(
+                        self.arg_i,
+                        reader_name.into(),
+                    ));
+                }
+            },
+        })
     }
 
     pub fn args(&mut self) -> AnyResult<Args> {
@@ -134,6 +133,7 @@ pub trait PipeParamState {
     async fn new(builder: ParamBuilder<Self::Args>) -> AnyResult<Self>
     where
         Self: Sized;
+    fn should_run(&mut self) -> bool;
     /// This must return some if it doesn't implement default
     fn configure(&self) -> Option<Self>
     where
@@ -144,7 +144,7 @@ pub trait PipeParamState {
 }
 
 pub trait PipeParam {
-    type Fetch: for<'s> PipeParamFetch<'s>;
+    type State: for<'s> PipeParamFetch<'s>;
 }
 
 pub trait PipeParamFetch<'s> {
@@ -155,6 +155,7 @@ pub trait PipeParamFetch<'s> {
 #[async_trait]
 impl PipeParamState for () {
     type Args = ();
+
     const KIND: TopicParamKind = TopicParamKind::None;
 
     async fn new(builder: ParamBuilder<()>) -> AnyResult<Self>
@@ -248,7 +249,8 @@ macro_rules! impl_build_params {
                             let builder = args.to_param_builder(
                                 arg_i,
                                 topic_param,
-                                &mut pipe_args
+                                &mut pipe_args,
+                                <<$param as PipeParam>::Fetch as PipeParamState>::KIND,
                             );
                             arg_i += 1;
                             <<$param as PipeParam>::Fetch as PipeParamState>::new(builder)
@@ -264,3 +266,207 @@ macro_rules! impl_build_params {
 pub(super) use impl_build_params;
 pub(super) use impl_pipe_param;
 pub(super) use impl_pipe_param_fetch;
+
+use crate::{
+    error::assert_config_provided, pipe::PipeObserver, prelude::bevy_ecs::archetype::Archetype,
+};
+
+#[async_trait]
+pub trait ParamStateImpl<'w, 's>: 'static {
+    type Topic: Component + Clone;
+    type Args: DeserializeOwned + Send + 'static;
+    type Param: PipeParam<State = Self> + SystemParam<Fetch = Self>;
+    const KIND: TopicParamKind;
+
+    fn new_rw(topic: Self::Topic) -> AnyResult<Self>;
+
+    async fn new(builder: ParamBuilder<Self::Args>) -> AnyResult<Self>
+    where
+        Self: Sized,
+    {
+        let id = builder.get_topic_id(Self::type_name())?;
+        let world = builder.world();
+        let topic = world.get::<Self::Topic>(id).unwrap();
+        Self::new_rw(topic.clone())
+    }
+
+    #[inline]
+    fn should_run(&mut self) -> bool {
+        true
+    }
+
+    fn configure(&self) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        Some(self.clone())
+    }
+
+    fn topic_param(&self) -> Option<TopicParam> {
+        match Self::KIND {
+            TopicParamKind::None => None,
+            TopicParamKind::Reader => Some(TopicParam::Reader(Entity::from_raw(u32::MAX))),
+            TopicParamKind::Writer => Some(TopicParam::Writer(Entity::from_raw(u32::MAX))),
+        }
+    }
+
+    fn init(world: &mut World, system_meta: &mut SystemMeta, config: Option<Self>) -> Self
+    where
+        Self: Sized,
+    {
+        assert_config_provided(config)
+    }
+
+    fn new_archetype(&mut self, archetype: &Archetype, system_meta: &mut SystemMeta) {
+    }
+
+    fn apply(&mut self, world: &mut World) {
+    }
+
+    fn default_config() -> Option<Self> {
+        None
+    }
+
+    unsafe fn system_get_param(
+        state: &'s mut Self,
+        _system_meta: &SystemMeta,
+        _world: &'w World,
+        _change_tick: u32,
+    ) -> Self::Param {
+        Self::get_param(state)
+    }
+
+    fn pipe_get_param(state: &'s mut Self) -> Self::Param {
+        Self::get_param(state)
+    }
+
+    fn get_param(&'s mut self) -> Self::Param;
+
+    /// Called before the pipe gets executed
+    fn pipe_executing(&mut self) {
+    }
+    /// Called after the pipe has executed
+    fn pipe_executed(&mut self) {
+    }
+}
+
+pub trait ParamImpl {
+    type State: for<'s> PipeParamState + SystemParamState + PipeParamFetch<'s> + PipeObserver;
+}
+
+#[macro_export]
+macro_rules! impl_param {
+    ($param:ident) => {
+        impl<T> PipeParam for $param {
+            type Fetch = <$param<T> as $crate::ParamImpl>;
+        }
+
+        impl<T> SystemParam for $param {
+            type Fetch = <$param<T> as $crate::ParamImpl>;
+        }
+    }
+}
+
+#[doc(hidden)]
+pub mod __async_trait__ {
+    pub use async_trait::async_trait;
+}
+
+#[macro_export]
+macro_rules! impl_state_param {
+    ($state:ident) => {
+        #[$crate::pipe::param::__async_trait__::async_trait]
+        impl<T: Send + Sync + 'static> $crate::pipe::param::PipeParamState for $state<T> {
+            type Args = <$state<T> as $crate::pipe::param::ParamStateImpl<'static, 'static>>::Args;
+
+            const KIND: $crate::pipe::param::TopicParamKind =
+                <$state<T> as $crate::ParamStateImpl>::KIND;
+
+            async fn new(
+                builder: $crate::pipe::param::ParamBuilder<Self::Args>,
+            ) -> AnyResult<Self>
+            where
+                Self: Sized,
+            {
+                <$state<T> as $crate::pipe::param::ParamStateImpl>::new(builder).await
+            }
+
+            fn configure(&self) -> Option<Self>
+            where
+                Self: Sized,
+            {
+                <$state<T> as $crate::pipe::param::ParamStateImpl>::configure(self)
+            }
+        }
+
+        unsafe impl<T: Send + Sync + 'static> $crate::bevy::ecs::system::SystemParamState
+            for $state<T>
+        {
+            type Config = Option<Self>;
+
+            fn init(
+                world: &mut $crate::prelude::World,
+                system_meta: &mut $crate::bevy::ecs::system::SystemMeta,
+                config: Self::Config,
+            ) -> Self {
+                <$state<T> as $crate::pipe::param::ParamStateImpl>::init(world, system_meta, config)
+            }
+
+            fn new_archetype(
+                &mut self,
+                archetype: &$crate::bevy::ecs::archetype::Archetype,
+                system_meta: &mut $crate::bevy::ecs::system::SystemMeta,
+            ) {
+                <$state<T> as $crate::pipe::param::ParamStateImpl>::new_archetype(self, archetype, system_meta);
+            }
+
+            fn apply(&mut self, world: &mut $crate::bevy::prelude::World) {
+                <$state<T> as $crate::pipe::param::ParamStateImpl>::apply(self, world);
+            }
+
+            fn default_config() -> Self::Config {
+                <$state<T> as $crate::pipe::param::ParamStateImpl>::default_config()
+            }
+        }
+
+        impl<'w, 's, T: Send + Sync + 'static>
+            $crate::bevy::ecs::system::SystemParamFetch<'w, 's> for $state<T>
+        {
+            type Item = <$state<T> as $crate::pipe::param::ParamStateImpl<'w, 's>>::Param;
+
+            unsafe fn get_param(
+                state: &'s mut Self,
+                system_meta: &$crate::bevy::ecs::system::SystemMeta,
+                world: &'w $crate::bevy::prelude::World,
+                change_tick: u32,
+            ) -> Self::Item {
+                <$state<T> as $crate::pipe::param::ParamStateImpl>::system_get_param(
+                    state,
+                    system_meta,
+                    world,
+                    change_tick,
+                )
+            }
+        }
+
+        impl<'s, T: Send + Sync + 'static> $crate::pipe::param::PipeParamFetch<'s>
+            for $state<T>
+        {
+            type Item = <$state<T> as $crate::pipe::param::ParamStateImpl<'static, 's>>::Param;
+
+            fn get_param(state: &'s mut Self) -> Self::Item {
+                <$state<T> as $crate::pipe::param::ParamStateImpl>::pipe_get_param(state)
+            }
+        }
+
+        impl<T: Send + Sync + 'static> $crate::::pipe::PipeObserver for $state<T> {
+            fn pipe_executing(&mut self) {
+                <$state<T> as $crate::pipe::param::ParamStateImpl>::pipe_executing(self)
+            }
+
+            fn pipe_executed(&mut self) {
+                <$state<T> as $crate::pipe::param::ParamStateImpl>::pipe_executed(self)
+            }
+        }
+    };
+}

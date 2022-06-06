@@ -1,32 +1,19 @@
-use crate::definitions::{PipeKind, StaticEstimations};
-use crate::pipe::{ParamBuilder, Pipe, SpawnPipeInner, TopicParam};
-use crate::prelude::*;
-use crate::sync::PrioMutex;
+use std::{io::Read, marker::PhantomData, sync::Arc};
+use std::any::Any;
+
 use async_trait::async_trait;
+use bevy::ecs::schedule::SystemDescriptor;
 use bevy::ecs::system::SystemParam;
+use bevy::utils::BoxedFuture;
 use serde::de::DeserializeOwned;
 use smallvec::SmallVec;
-use std::io::Read;
-use std::marker::PhantomData;
-use std::sync::Arc;
 
-pub struct PipeFactoryArgs {
-    pub world: Arc<PrioMutex<World>>,
-    pub config: Arc<SpawnPipeInner>,
-    pub reader_topics: SmallVec<[Entity; 4]>,
-    pub writer_topics: SmallVec<[Entity; 4]>,
-}
-
-impl PipeFactoryArgs {
-    pub fn to_param_builder<Args: DeserializeOwned, R: Read>(
-        &self,
-        arg_i: usize,
-        topic: Option<TopicParam>,
-        args: R,
-    ) -> ParamBuilder<Args> {
-        ParamBuilder::new(self, arg_i, topic, args)
-    }
-}
+use crate::{
+    models::{PipeKind, StaticEstimations},
+    pipe::{ParamBuilder, Pipe, SpawnPipeInner, TopicParam},
+    prelude::*,
+    sync::PrioMutex,
+};
 
 #[async_trait]
 pub trait PipeFactory: Send + Sync {
@@ -34,8 +21,116 @@ pub trait PipeFactory: Send + Sync {
     fn dyn_clone(&self) -> Box<dyn PipeFactory>;
 }
 
+pub trait Factory2 {
+    async fn new_pipe(self: &mut Arc<Self>, args: PipeFactoryArgs) -> AnyResult<Box<dyn Pipe>>;
+}
+
+///////////////// winner begin
+struct PipeResult {
+    pipe: Arc<dyn Pipe>,
+    is_async: bool,
+    // stores type information neccessary to add a system to the schedule
+    pre_baker: Arc<dyn Any>,
+    adder: Box<dyn FnMut(&mut dyn Any, &mut StageBuilder)>,
+}
+
+
+//pub trait IntoPipeFactory<Out, Params, Marker>: Sized {
+pub trait IntoPipe<Out, Params, Marker>: Sized {
+    fn into_pipe(self) -> PipeResult;
+}
+
+pub trait PipeBevyFetch {
+
+}
+
+pub trait PipeSystemParamFetch<'s>: PipeParamState + SystemParamState {
+    type ParamSystem: SystemParam + 's;
+    type ParamPipe: PipeParam<State = Self> + 's;
+    fn get_param(&'s mut self, system_param: Self::ParamSystem) -> Self::ParamPipe;
+}
+
+fn main() {
+    use std::sync::Arc;
+    use std::any::Any;
+    let a: Arc<dyn Any + Send + Sync> = Arc::new("abc".to_string());
+    let b = a.downcast::<String>();
+    dbg!(b);
+}
+
+pub struct PipeSystemAder {
+    storage: Arc<dyn Any>,
+    add: fn(Arc<dyn Any>, StageBuilder)
+}
+
+pub trait Pipe2 {
+    fn add_bevy_system(self: &mut Arc<Self>, builder: StageBuilder);
+}
+//////////////// winner end
+
+pub struct DynPipe(Arc<dyn Pipe2>);
+
+impl<F, F0, F1> SystemParamFunction<(), (), (F0, F1), ()> for Arc<PipeContainer<F, Params, State, Out>> {
+    unsafe fn run(&mut self, input: (), state: &mut bevy_ecs::system::system_param::Fetch, system_meta: &SystemMeta, world: &World, change_tick: u32) -> () {
+        todo!()
+    }
+}
+
+impl<P: Pipe2, Params, Marker> SystemParamFunction<(), (), Params, Marker> for P {
+    unsafe fn run(&mut self, input: (), state: (), system_meta: &SystemMeta, world: &World, change_tick: u32) {
+        Pipe2::run(self)
+    }
+}
+
+pub struct PipeContainer<F, Params, State, Out> {
+    state: State,
+    f: F,
+    _t: PhantomData<fn() -> (Params, Out)>,
+}
+
+impl<F, F0, F1, Out> PipeContainer<F, (F0, F1), (F0::Fetch, F1::Fetch), Out>
+where
+    F: FnMut(F0, F1) -> Out,
+    F0: SystemParam,
+    F1: SystemParam,
+{
+    pub fn new(f: F) -> Self {
+        Self {
+            f,
+            _t: Default::default()
+        }
+    }
+}
+
+impl<F, F0, F1, Out> SystemParamFunction<(), (), (), ()> for PipeContainer<F, (F0, F1), Out> {
+    unsafe fn run(&mut self, input: (), state: &mut (), system_meta: &SystemMeta, world: &World, change_tick: u32) {
+        todo!()
+    }
+}
+
+fn pipe_factory<T>(args: PipeFactoryArgs) -> BoxedFuture<'static, Arc<dyn Pipe>> {
+    #[allow(unused_mut)]
+        let mut errors = None;
+    $(
+    let _out: $out;
+    let slice: &[u8] = &[];
+    let builder = args.to_param_builder::<(), _>(0, None, slice, ErrorsState::KIND);
+    let errors_state: ErrorsState = PipeParamState::new(builder).await.unwrap();
+    errors = Some(errors_state);
+    )?
+    let params: Result<($(<$param as PipeParam>::Fetch,)*), PipeParamError> =
+        <paste!([<P $($param)*>])>::build_params::<$($param),*>(args).await;
+//                    .map_err(|e| PipeSpawnError::PipeConstructionFailed {
+//                        source: e,
+//                        pipe_name: args.config.config.name,
+//                        pipeline: args.config.pipeline.name,
+//                })
+    Ok(Box::new(BevyPipe::new(self.f, params?, errors)))
+    T::new_pipe(args)
+}
+
 pub struct PipeFactoryContainer {
-    pub factory: Box<dyn PipeFactory>,
+    pub factory: fn(PipeFactoryArgs) -> BoxedFuture<'static, Arc<dyn Pipe>>,
     pub kind: PipeKind,
     pub estimations: Option<StaticEstimations>,
 }
@@ -136,7 +231,7 @@ macro_rules! impl_pipe_factory (
                 $(
                     let _out: $out;
                     let slice: &[u8] = &[];
-                    let builder = args.to_param_builder::<(), _>(0, None, slice);
+                    let builder = args.to_param_builder::<(), _>(0, None, slice, ErrorsState::KIND);
                     let errors_state: ErrorsState = PipeParamState::new(builder).await.unwrap();
                     errors = Some(errors_state);
                 )?
@@ -180,7 +275,7 @@ macro_rules! impl_async_pipe_factory (
                 $(
                     let _out: $out;
                     let slice: &[u8] = &[];
-                    let builder = args.to_param_builder::<(), _>(0, None, slice);
+                    let builder = args.to_param_builder::<(), _>(0, None, slice, ErrorsState::KIND);
                     let errors_state: ErrorsState = PipeParamState::new(builder).await.unwrap();
                     errors = Some(errors_state);
                 )?
@@ -269,3 +364,7 @@ pub(super) use impl_async_pipe_factory;
 pub(super) use impl_into_async_pipe_factory;
 pub(super) use impl_into_pipe_factory;
 pub(super) use impl_pipe_factory;
+use zmaxion_utils::prelude::AnyResult;
+
+use crate::pipe::param::{PipeParam, PipeParamState, TopicParamKind};
+use crate::prelude::bevy_ecs::system::{SystemMeta, SystemParamState};

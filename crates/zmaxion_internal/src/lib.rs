@@ -18,10 +18,20 @@ pub mod utils {
     pub use zmaxion_utils::*;
 }
 
+pub mod topic {
+    pub use zmaxion_topic::*;
+}
+
+pub mod param {
+    pub use zmaxion_param::*;
+}
+
+pub mod pipe {
+    pub use zmaxion_pipe::*;
+}
+
 pub mod prelude {
-    pub use crate::app::prelude::*;
-    pub use crate::core::prelude::*;
-    pub use crate::plugins::prelude::*;
-    pub use crate::rt::prelude::*;
-    pub use crate::utils::prelude::*;
+    pub use crate::{
+        app::prelude::*, core::prelude::*, plugins::prelude::*, rt::prelude::*, utils::prelude::*,
+    };
 }
