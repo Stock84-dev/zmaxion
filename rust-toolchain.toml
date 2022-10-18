@@ -1,2 +1,5 @@
 [toolchain]
-channel = "1.56.0-x86_64-unknown-linux-gnu"
+## 1.59 for arrow2
+## 1.60 for polars-core
+#channel = "1.60-x86_64-unknown-linux-gnu"
+channel = "nightly"

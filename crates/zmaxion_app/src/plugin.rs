@@ -21,6 +21,14 @@ pub trait PluginGroup {
     fn build<'a>(&'a mut self, group: &'a mut PluginGroupBuilder) -> &'a mut PluginGroupBuilder;
 }
 
+pub struct BevyPluginWrapper<T: BevyPlugin>(pub T);
+
+impl<T: BevyPlugin> Plugin for BevyPluginWrapper<T> {
+    fn build<'a, 'b>(self: Box<Self>, builder: &'b mut AppBuilder<'a>) -> &'b mut AppBuilder<'a> {
+        builder.add_bevy_plugin(self.0)
+    }
+}
+
 struct PluginEntry {
     plugin: Box<dyn Plugin>,
     enabled: bool,
@@ -109,6 +117,22 @@ impl PluginGroupBuilder {
             .get_mut(&TypeId::of::<T>())
             .expect("Cannot enable a plugin that does not exist.");
         plugin_entry.enabled = true;
+        self
+    }
+
+    pub fn replace<T: Plugin>(&mut self, plugin: T) -> &mut Self {
+        let id = TypeId::of::<T>();
+        match self.plugins.get_mut(&id) {
+            None => {
+                panic!(
+                    "Trying to replace non-existent `{}` plugin",
+                    std::any::type_name::<T>()
+                )
+            }
+            Some(old) => {
+                old.plugin = Box::new(plugin);
+            }
+        }
         self
     }
 

@@ -15,26 +15,43 @@ mod __export__ {
     pub use async_trait::async_trait;
     pub use zmaxion_core::prelude::Entity;
     pub use zmaxion_param::{
-        ControlFlow, ParamBuilder, PipeParamImpl, PipeParamStateImpl, TopicParam, TopicParamKind,
+        ParamBuilder, PipeParamImpl, PipeParamStateImpl, TopicParam, TopicParamKind,
     };
     pub use zmaxion_utils::prelude::AnyResult;
 }
+pub mod system_df_topic;
 
 // mod api;
 mod async_topic;
+// pub mod topic_v2;
+// pub mod data_frame_topic;
+// mod df_topic;
 pub mod dyn_topic;
 // mod topic_impl;
 // pub use topic_impl::*;
+mod models;
 mod system_topic;
+
 pub use system_topic::SystemTopic;
 use zmaxion_core::models::TopicSpawnerArgs;
+use zmaxion_param::{AsyncReader, AsyncReaderState, AsyncTopic};
+use zmaxion_rt::AsyncMutex;
+use zmaxion_utils::prelude::RwLock;
+
+use crate::system_topic::{SystemTopicReader, SystemTopicReaderState};
 
 pub mod prelude {
+    pub use zmaxion_param::{AsyncReader, AsyncWriter};
+
     pub use crate::{
-        dyn_topic::{DynReader, DynWriter},
+        async_topic::{GlobalAsyncReader, GlobalAsyncWriter},
+        dyn_topic::{DynReader, DynWriter, TopicReader, TopicWriter},
+        system_df_topic::{
+            GenericGlobalBevyReader, GenericGlobalBevyWriter, GlobalBevyReader, GlobalBevyWriter,
+        },
         system_topic::{
-            BevySystemTopicReader, BevySystemTopicWriter, GlobalSystemReader, GlobalSystemWriter,
-            SystemTopicReader, SystemTopicWriter,
+            BevySystemTopicWriter, GlobalSystemReader, GlobalSystemWriter, SystemTopicReader,
+            SystemTopicWriter,
         },
     };
 }
@@ -66,6 +83,7 @@ pub struct TopicFeatures {
 }
 pub trait HasTopicFeatures {
     const FEATURES: TopicFeatures;
+    fn add_system(stage: &mut SystemStage);
 }
 /// Semantics of a topic if a pipe would be executed again. Not having multiple read calls in a
 /// pipe.
@@ -80,3 +98,10 @@ pub trait TopicRwState {
 }
 
 pub struct TopicRegistration {}
+
+pub enum TopicReaderStateEnum<T: Resource> {
+    System(SystemTopicReaderState<T>),
+    Async(AsyncReaderState<T>),
+}
+
+pub struct ReaderState<T: Resource>(Arc<AsyncMutex<TopicReaderStateEnum<T>>>);

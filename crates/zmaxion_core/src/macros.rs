@@ -16,7 +16,7 @@ macro_rules! read_all {
             Some(x) => x,
             None => return,
         }
-        .read_all()
+        .iter()
     };
 }
 

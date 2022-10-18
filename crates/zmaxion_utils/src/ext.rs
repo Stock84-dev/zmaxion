@@ -1,4 +1,4 @@
-use std::any::TypeId;
+use std::{any::TypeId, fmt::Display};
 
 use crate::prelude::*;
 
@@ -12,11 +12,11 @@ impl<T: ?Sized> TypeName for T {
     }
 }
 
-pub trait HasTypeId {
+pub trait TypeIdExt {
     fn id() -> TypeId;
 }
 
-impl<T: ?Sized + 'static> HasTypeId for T {
+impl<T: ?Sized + 'static> TypeIdExt for T {
     fn id() -> TypeId {
         TypeId::of::<Self>()
     }
@@ -38,18 +38,5 @@ impl BoolExt for bool {
 
     fn map_false<F: FnOnce() -> T, T>(self, mapper: F) -> Option<T> {
         (!self).map_true(mapper)
-    }
-}
-
-pub trait OptionIntoResultExt {
-    type Nullable;
-    fn some(self) -> AnyResult<Self::Nullable>;
-}
-
-impl<T> OptionIntoResultExt for Option<T> {
-    type Nullable = T;
-
-    fn some(self) -> AnyResult<Self::Nullable> {
-        self.ok_or(anyhow!("called `Option::unwrap()` on a `None` value"))
     }
 }

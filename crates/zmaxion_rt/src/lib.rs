@@ -1,4 +1,9 @@
-use std::future::Future;
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use bevy_ecs::prelude::*;
 use pin_project::pin_project;
@@ -15,17 +20,25 @@ pub use tokio;
 pub mod prelude {
     #[cfg(feature = "rt_tokio")]
     pub use crate::rt_tokio::*;
-    pub use crate::FutureSpawnExt;
+    pub use crate::{
+        pipe_runtimes::{AsyncRuntimeMarker, BevyRuntimeMarker, SerialRuntimeMarker},
+        BlockFutureExt, SpawnFutureExt,
+    };
 }
 
 use prelude::Handle;
 pub use prelude::*;
 
 pub trait AsyncRuntime {
+    fn default_multi_thread() -> Self;
+    fn default_current_thread() -> Self;
     fn spawn<F>(&self, future: F) -> Task<<F as Future>::Output>
     where
         F: Future + Send + 'static,
         <F as Future>::Output: Send + 'static;
+    fn block_on<F>(&self, future: F) -> <F as Future>::Output
+    where
+        F: Future;
 }
 
 pub struct GenericRuntime<T: AsyncRuntime> {
@@ -37,6 +50,18 @@ impl<T: AsyncRuntime> GenericRuntime<T> {
         Self { runtime }
     }
 
+    pub fn default_current_thread() -> Self {
+        Self {
+            runtime: T::default_current_thread(),
+        }
+    }
+
+    pub fn default_multi_thread() -> Self {
+        Self {
+            runtime: T::default_multi_thread(),
+        }
+    }
+
     pub fn spawn<F>(&self, future: F) -> Task<<F as Future>::Output>
     where
         F: Future + Send + 'static,
@@ -44,11 +69,12 @@ impl<T: AsyncRuntime> GenericRuntime<T> {
     {
         self.runtime.spawn(future)
     }
-}
 
-impl<T: AsyncRuntime + Default> Default for GenericRuntime<T> {
-    fn default() -> Self {
-        Self::new(T::default())
+    pub fn block_on<F>(&self, future: F) -> <F as Future>::Output
+    where
+        F: Future,
+    {
+        self.runtime.block_on(future)
     }
 }
 
@@ -71,6 +97,21 @@ impl<T: SpawnedTask> GenericTask<T> {
 
     pub fn abort(&self) {
         self.0.abort();
+    }
+
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T: SpawnedTask + Unpin> Future for GenericTask<T> {
+    type Output = T::InnerOutput;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match SpawnedTask::poll(&mut self.get_mut().0) {
+            None => Poll::Pending,
+            Some(v) => Poll::Ready(v),
+        }
     }
 }
 
@@ -137,13 +178,13 @@ pub struct GenericHandle<T: RuntimeHandle> {
 }
 
 impl<T: RuntimeHandle> GenericHandle<T> {
-    fn current() -> Self {
+    pub fn current() -> Self {
         Self {
             inner: T::current(),
         }
     }
 
-    fn spawn<F>(&self, future: F) -> Task<<F as Future>::Output>
+    pub fn spawn<F>(&self, future: F) -> Task<<F as Future>::Output>
     where
         F: Future + Send + 'static,
         <F as Future>::Output: Send + 'static,
@@ -165,7 +206,7 @@ lazy_static::lazy_static! {
 }
 
 pub fn set_runtime(runtime: &Runtime) {
-    runtime.spawn(async { ASYNC_RUNTIME_HANDLE.spawn(async {}) });
+    runtime.spawn(ASYNC_RUNTIME_HANDLE.spawn(async {}));
 }
 
 pub fn spawn<F>(future: F) -> Task<F::Output>
@@ -176,16 +217,112 @@ where
     ASYNC_RUNTIME_HANDLE.spawn(future)
 }
 
-pub trait FutureSpawnExt: Future {
+pub trait SpawnFutureExt: Future {
     fn spawn(self) -> Task<Self::Output>;
 }
 
-impl<T> FutureSpawnExt for T
+pub trait BlockFutureExt: Future {
+    fn block(self) -> Self::Output;
+}
+
+impl<T> BlockFutureExt for T
+where
+    Self: Future,
+{
+    fn block(self) -> Self::Output {
+        ASYNC_RUNTIME_HANDLE.inner.block_on(self)
+    }
+}
+
+impl<T> SpawnFutureExt for T
 where
     Self: Future + Send + 'static,
     Self::Output: Send + 'static,
 {
     fn spawn(self) -> Task<Self::Output> {
         crate::spawn(self)
+    }
+}
+
+pub mod pipe_runtimes {
+    pub use crate::Runtime;
+
+    #[derive(Clone, Default)]
+    pub struct SerialRuntimeMarker;
+    #[derive(Clone, Default)]
+    pub struct BevyRuntimeMarker;
+    #[derive(Clone, Default)]
+    pub struct AsyncRuntimeMarker;
+
+    impl RuntimeMarker for SerialRuntimeMarker {
+        const RUNTIME_KIND: PipeRuntimeKind = PipeRuntimeKind::Sync;
+    }
+    impl RuntimeMarker for BevyRuntimeMarker {
+        const RUNTIME_KIND: PipeRuntimeKind = PipeRuntimeKind::Bevy;
+    }
+    impl RuntimeMarker for AsyncRuntimeMarker {
+        const RUNTIME_KIND: PipeRuntimeKind = PipeRuntimeKind::Async;
+    }
+
+    pub trait RuntimeMarker {
+        const RUNTIME_KIND: PipeRuntimeKind;
+    }
+
+    pub enum PipeRuntimeKind {
+        Sync,
+        Bevy,
+        Async,
+    }
+
+    impl Default for PipeRuntimeKind {
+        fn default() -> Self {
+            Self::Async
+        }
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Default)]
+    pub struct ControlFlow: u32 {
+        const DESPAWN = 1;
+        const SKIP = 2;
+    }
+}
+
+/// Wakes the current task and returns [`Poll::Pending`] once.
+///
+/// This function is useful when we want to cooperatively give time to the task scheduler. It is
+/// generally a good idea to yield inside loops because that way we make sure long-running tasks
+/// don't prevent other tasks from running.
+///
+/// # Examples
+///
+/// ```
+/// use futures_lite::future;
+///
+/// # spin_on::spin_on(async {
+/// future::yield_now().await;
+/// # })
+/// ```
+pub fn yield_now() -> YieldNow {
+    YieldNow(false)
+}
+
+/// Future for the [`yield_now()`] function.
+#[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct YieldNow(bool);
+
+impl Future for YieldNow {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if !self.0 {
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
     }
 }

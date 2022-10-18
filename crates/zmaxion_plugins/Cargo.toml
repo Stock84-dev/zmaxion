@@ -6,6 +6,21 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+zmaxion_topic = { path = "../zmaxion_topic", version = "0.1.0" }
+zmaxion_param = { path = "../zmaxion_param", version = "0.1.0" }
 zmaxion_app = { path = "../zmaxion_app", version = "0.1.0" }
+zmaxion_utils = { path = "../zmaxion_utils", version = "0.1.0" }
+zmaxion_pipe = { path = "../zmaxion_pipe", version = "0.1.0" }
 zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }
 zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
+zmaxion_flow = { path = "../zmaxion_flow", version = "0.1.0" }
+bevy_hierarchy  = { version = "0.7.0", default-features = false }
+bevy_core = { version = "0.7.0", default-features = false }
+bevy_log = { version = "0.7.0", default-features = false }
+thiserror = "1.0.31"
+anyhow = "1.0.58"
+tracing-subscriber = "0.3.14"
+
+
+[dev-dependencies]
+todo-or-die = { version = "0.1.2", features = ["crate"] }

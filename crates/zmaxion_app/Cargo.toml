@@ -4,11 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }
+zmaxion_topic = { path = "../zmaxion_topic", version = "0.1.0" }
+zmaxion_param = { path = "../zmaxion_param", version = "0.1.0" }
+zmaxion_pipe = { path = "../zmaxion_pipe", version = "0.1.0" }
+zmaxion_utils = { path = "../zmaxion_utils", version = "0.1.0" }
+zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
+zmaxion_topics = { path = "../zmaxion_topics", version = "0.1.0" }
+ergnomics = { path = "../ergnomics" }
 bevy_ecs = { version = "0.7.0", default-features = false }
 bevy_reflect = { version = "0.7.0", default-features = false }
 bevy_utils = { version = "0.7.0", default-features = false }
 bevy_diagnostic = { version = "0.7.0", default-features = false }
 bevy_app = { version = "0.7.0", default-features = false }
-zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }
-zmaxion_topic = { path = "../zmaxion_topic", version = "0.1.0" }
-zmaxion_utils = { path = "../zmaxion_utils", version = "0.1.0" }

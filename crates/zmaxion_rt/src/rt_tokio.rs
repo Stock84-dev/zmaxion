@@ -1,4 +1,4 @@
-use std::future::Future;
+use std::{future::Future, time::Duration};
 
 use futures_lite::future;
 
@@ -10,6 +10,12 @@ pub type Task<T> = crate::GenericTask<tokio::task::JoinHandle<T>>;
 pub type JoinHandle<T> = tokio::task::JoinHandle<T>;
 pub type Notify = crate::GenericNotify<&'static tokio::sync::Notify>;
 
+use tokio::sync::broadcast::Sender;
+
+pub fn sleep(duration: Duration) -> impl Future {
+    tokio::time::sleep(duration)
+}
+
 pub struct TokioRuntime(pub tokio::runtime::Runtime);
 
 impl Default for TokioRuntime {
@@ -19,12 +25,39 @@ impl Default for TokioRuntime {
 }
 
 impl AsyncRuntime for TokioRuntime {
+    fn default_multi_thread() -> Self {
+        Self(
+            tokio::runtime::Builder::new_multi_thread()
+                .thread_name("zmaxion_realtime_runtime")
+                .enable_all()
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn default_current_thread() -> Self {
+        Self(
+            tokio::runtime::Builder::new_current_thread()
+                .thread_name("zmaxion_worker_runtime")
+                .enable_all()
+                .build()
+                .unwrap(),
+        )
+    }
+
     fn spawn<F>(&self, future: F) -> Task<<F as Future>::Output>
     where
         F: Future + Send + 'static,
         <F as Future>::Output: Send + 'static,
     {
         Task::new(tokio::runtime::Runtime::spawn(&self.0, future))
+    }
+
+    fn block_on<F>(&self, future: F) -> <F as Future>::Output
+    where
+        F: Future,
+    {
+        tokio::runtime::Runtime::block_on(&self.0, future)
     }
 }
 

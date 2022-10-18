@@ -232,7 +232,7 @@ impl<T: Resource> From<&World> for ResTopicWriterState<T> {
 
 impl<'s, T: Resource> ResTopicWriter<'s, T> {
     pub fn write(&self, event: T) {
-        self.state.state.write(event);
+        self.state.state.extend_one(event);
     }
 
     pub fn write_all(&self, items: impl IntoIterator<Item = T>) {

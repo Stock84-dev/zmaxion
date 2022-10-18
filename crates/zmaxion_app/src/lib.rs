@@ -2,6 +2,8 @@ mod app;
 mod plugin;
 mod topic_plugin;
 
+pub use plugin::BevyPluginWrapper;
+
 #[doc(hidden)]
 pub mod prelude {
     pub use bevy_app::prelude::{CoreStage, Plugin as BevyPlugin, PluginGroup as BevyPluginGroup};

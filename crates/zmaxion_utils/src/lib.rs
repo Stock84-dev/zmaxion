@@ -1,5 +1,7 @@
+pub mod convert;
 mod ext;
 mod macros;
+pub mod pool;
 mod sync;
 
 #[doc(hidden)]
@@ -13,11 +15,13 @@ pub mod prelude {
         Result as AnyResult,
     };
     pub use tracing::{
-        debug, debug_span, error, error_span, info, info_span, trace, trace_span, warn, warn_span,
+        debug, debug_span, enabled, error, error_span, event, event_enabled, info, info_span, span,
+        span_enabled, trace, trace_span, warn, warn_span,
     };
+    pub use tracing_futures::Instrument;
 
     pub use crate::{
-        ext::{BoolExt, HasTypeId, TypeName},
+        ext::{BoolExt, TypeIdExt, TypeName},
         ok, ok_break, ok_loop, some, some_break, some_loop,
         sync::*,
         type_name_of,

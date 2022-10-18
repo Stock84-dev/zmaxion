@@ -24,13 +24,26 @@ pub struct SystemTopic<T> {
     write_events: Vec<T>,
 }
 
-impl<T> HasTopicFeatures for SystemTopic<T> {
+impl<T> Default for SystemTopic<T> {
+    fn default() -> Self {
+        Self {
+            read_events: vec![],
+            write_events: vec![],
+        }
+    }
+}
+
+impl<T: Resource> HasTopicFeatures for SystemTopic<T> {
     const FEATURES: TopicFeatures = TopicFeatures {
         system_execution: true,
         async_execution: false,
         cursors_cached: false,
         semantics: Semantics::AtMostOnce,
     };
+
+    fn add_system(stage: &mut SystemStage) {
+        stage.add_system(Self::update_system);
+    }
 }
 
 #[derive(SystemParam)]
@@ -44,9 +57,26 @@ pub struct GlobalSystemReader<'w, 's, T: Resource> {
     global_id: Res<'w, GlobalEntity>,
 }
 
-impl<'w, 's, T: Resource> GlobalSystemReader<'w, 's, T> {
+impl<'w: 's, 's, T: Resource> GlobalSystemReader<'w, 's, T> {
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        let topic = self.global_id.get(&self.query);
+        let iter = topic.read_events.iter();
+        iter
+    }
+
     pub fn read(&self) -> &[T] {
-        &self.query.get(**self.global_id).unwrap().read_events
+        &self.global_id.get(&self.query).read_events
+    }
+}
+
+impl<'w: 's, 's, T: Resource> IntoIterator for &'s GlobalSystemReader<'w, 's, T> {
+    type IntoIter = std::slice::Iter<'s, T>;
+    type Item = &'s T;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let topic = self.global_id.get(&self.query);
+        let iter = topic.read_events.iter();
+        iter
     }
 }
 
@@ -66,7 +96,7 @@ pub struct SystemTopicReaderState<T: Resource> {
 }
 
 impl<T: Resource> SystemTopic<T> {
-    pub fn system(mut query: Query<&mut SystemTopic<T>>) {
+    pub fn update_system(mut query: Query<&mut SystemTopic<T>>) {
         for mut t in query.iter_mut() {
             let t = &mut *t;
             std::mem::swap(&mut t.read_events, &mut t.write_events);
@@ -77,16 +107,24 @@ impl<T: Resource> SystemTopic<T> {
 
 #[async_trait]
 impl<'s, T: Sync + Send> TopicReader<'s, T> for SystemTopicReader<'s, T> {
-    async fn read(self) -> ReadGuard<'s, T> {
-        self.try_read()
+    async fn read(self) -> AnyResult<ReadGuard<'s, T>> {
+        if !self.topic.read_events.is_empty() {
+            trace!("{}::read()", std::any::type_name::<Self>());
+        }
+        // result reserved for future compatibility
+        Ok(ReadGuard::new(GuardedEvents::Slice(
+            &self.topic.read_events[0..self.topic.read_events.len()],
+        )))
     }
 
-    fn try_read(self) -> ReadGuard<'s, T> {
-        let range = 0..self.topic.read_events.len();
+    fn try_read(self) -> Option<ReadGuard<'s, T>> {
         if !self.topic.read_events.is_empty() {
             trace!("{}::try_read()", std::any::type_name::<Self>());
+            return Some(ReadGuard::new(GuardedEvents::Slice(
+                &self.topic.read_events[0..self.topic.read_events.len()],
+            )));
         }
-        ReadGuard::new(GuardedEvents::Slice(&self.topic.read_events), range)
+        None
     }
 }
 
@@ -105,8 +143,6 @@ impl<T: Resource> PipeParamState for SystemTopicReaderState<T> {
         Self: Sized,
     {
         let id = builder.get_topic_id(Self::type_name())?;
-        let world = builder.world();
-        let topic = world.get::<SystemTopic<T>>(id).unwrap();
         Ok(Self {
             topic_id: id,
             _t: Default::default(),
@@ -120,7 +156,7 @@ impl<'w: 's, 's, T: Resource> PipeSystemParamFetch<'w, 's> for SystemTopicReader
 
     fn get_param(&'s mut self, system_param: &'s mut Self::SystemParam) -> Self::PipeParam {
         SystemTopicReader {
-            topic: system_param.query.get(self.topic_id).unwrap(),
+            topic: self.topic_id.get(&system_param.query),
         }
     }
 }
@@ -141,9 +177,9 @@ pub struct GlobalSystemWriter<'w, 's, T: Resource> {
 
 impl<'w, 's, T: Resource> GlobalSystemWriter<'w, 's, T> {
     pub fn write(&mut self, data: T) {
-        self.query
-            .get_mut(**self.global_id)
-            .unwrap()
+        trace!("{}::write", Self::type_name());
+        self.global_id
+            .get_mut(&mut self.query)
             .write_events
             .push(data);
     }
@@ -151,9 +187,8 @@ impl<'w, 's, T: Resource> GlobalSystemWriter<'w, 's, T> {
 
 impl<'w, 's, T: Resource> Extend<T> for GlobalSystemWriter<'w, 's, T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        self.query
-            .get_mut(**self.global_id)
-            .unwrap()
+        self.global_id
+            .get_mut(&mut self.query)
             .write_events
             .extend(iter);
     }
@@ -183,8 +218,6 @@ impl<T: Resource> PipeParamState for SystemTopicWriterState<T> {
         Self: Sized,
     {
         let id = builder.get_topic_id(Self::type_name())?;
-        let world = builder.world();
-        let topic = world.get::<SystemTopic<T>>(id).unwrap();
         Ok(Self {
             topic_id: id,
             _t: Default::default(),
@@ -198,7 +231,7 @@ impl<'w: 's, 's, T: Resource> PipeSystemParamFetch<'w, 's> for SystemTopicWriter
 
     fn get_param(&'s mut self, system_param: &'s mut Self::SystemParam) -> Self::PipeParam {
         SystemTopicWriter {
-            topic: system_param.query.get_mut(self.topic_id).unwrap(),
+            topic: self.topic_id.get_mut(&mut system_param.query),
         }
     }
 }

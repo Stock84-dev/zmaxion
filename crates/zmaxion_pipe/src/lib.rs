@@ -1,74 +1,120 @@
-use std::{any::Any, future::Future, marker::PhantomData, sync::Arc};
+use std::{any::Any, borrow::Cow, future::Future, marker::PhantomData, sync::Arc};
 
 use bevy_ecs::{
     all_tuples,
     prelude::*,
     schedule::IntoSystemDescriptor,
-    system::{SystemParam, SystemParamFetch},
+    system::{SystemParam, SystemParamFetch, SystemState},
 };
-use futures_util::future::{BoxFuture, FutureExt};
+use ergnomics::prelude::*;
+use futures_util::future::{BoxFuture, FutureExt, Pending};
 use paste::paste;
+use zmaxion_core::models::{DynPipeDeclaration, DynPipeFeatures, PipeFeatures};
 use zmaxion_param::{
+    __async_trait__::async_trait,
+    __params__::*,
+    prelude::{ErrorsState, PipeParamError},
     PipeFactoryArgs, PipeObserver, PipeParam, PipeParamFetch, PipeParamState, PipeSystemParamFetch,
-    __params__::*, prelude::ErrorsState, TopicParam, TopicParamKind,
+    TopicParam, TopicParamKind,
 };
-use zmaxion_rt::prelude::*;
+use zmaxion_rt::{
+    pipe_runtimes::{
+        AsyncRuntimeMarker, BevyRuntimeMarker, PipeRuntimeKind, RuntimeMarker, SerialRuntimeMarker,
+    },
+    prelude::*,
+    ControlFlow,
+};
 use zmaxion_utils::prelude::*;
 
-pub struct StageBuilder;
+mod p2;
+pub use p2::*;
 
-impl StageBuilder {
-    //    pub fn add_system<Params: SystemParam, T: SystemParamFunction<(), (), Params, ()>>(
-    //        &mut self,
-    //        system: T,
-    //    ) {
-    //    }
-    pub fn add_system<T: IntoSystemDescriptor<Params>, Params>(&mut self, system: T) {
+pub mod components {
+    use bevy_ecs::prelude::Entity;
+    use zmaxion_core::{prelude::Component, smallvec::SmallVec};
+    use zmaxion_rt::Task;
+    use zmaxion_utils::prelude::AnyResult;
+
+    use crate::PipeSystemAdder;
+
+    #[derive(Component)]
+    pub struct PipeTask(pub Task<AnyResult<Option<Box<dyn PipeSystemAdder>>>>);
+    #[derive(Component)]
+    pub struct SystemData {
+        pub reader_topics: SmallVec<[Entity; 4]>,
+        pub writer_topics: SmallVec<[Entity; 4]>,
     }
 }
 
-pub trait IntoPipeFactory<Out, Params, Fut>: Sized {
-    fn into_pipe_factory(self) -> Box<dyn PipeFactory>;
+pub mod resources {
+    use zmaxion_core::prelude::*;
+
+    use crate::{PipeDefinition, PipeFactory};
+
+    pub struct PipeDefinitions(pub HashMap<String, PipeDefinition>);
 }
 
-pub trait PipeFactory {
+pub mod prelude {
+    pub use zmaxion_core::models::PipeFeatures;
+    use zmaxion_rt::{AsyncRuntimeMarker, BevyRuntimeMarker, SerialRuntimeMarker};
+
+    pub fn serial_pipe_features() -> PipeFeatures<SerialRuntimeMarker> {
+        PipeFeatures::<SerialRuntimeMarker>::default()
+    }
+    pub fn bevy_pipe_features() -> PipeFeatures<BevyRuntimeMarker> {
+        PipeFeatures::<BevyRuntimeMarker>::default()
+    }
+    pub fn async_pipe_features() -> PipeFeatures<AsyncRuntimeMarker> {
+        PipeFeatures::<AsyncRuntimeMarker>::default()
+    }
+}
+
+pub struct PipeDefinition {
+    pub factory: Box<dyn PipeFactory>,
+}
+
+#[derive(Component)]
+pub struct Pipe {
+    pub adder: Option<Box<dyn PipeSystemAdder>>,
+}
+
+pub trait PipeFactory: Send + Sync {
     fn new(
         &mut self,
         args: PipeFactoryArgs,
     ) -> BoxFuture<'static, AnyResult<Option<Box<dyn PipeSystemAdder>>>>;
+
+    fn declaration(&self) -> &DynPipeDeclaration;
 }
 
-impl<T> PipeFactory for T
-where
-    T: FnMut(PipeFactoryArgs) -> BoxFuture<'static, AnyResult<Option<Box<dyn PipeSystemAdder>>>>,
-{
-    fn new(
-        &mut self,
-        args: PipeFactoryArgs,
-    ) -> BoxFuture<'static, AnyResult<Option<Box<dyn PipeSystemAdder>>>> {
-        (self)(args)
-    }
-}
-
-pub trait PipeSystemAdder {
+pub trait PipeSystemAdder: Send + Sync {
     /// SAFETY: system must be removed before adding it again
-    unsafe fn add_system(&mut self, builder: &mut StageBuilder);
+    unsafe fn add_system(&mut self, builder: &mut SystemStage);
 }
 
-impl<T> PipeSystemAdder for T
+impl<T: Send + Sync> PipeSystemAdder for T
 where
-    T: FnMut(&mut StageBuilder),
+    T: FnMut(&mut SystemStage),
 {
-    unsafe fn add_system(&mut self, builder: &mut StageBuilder) {
-        (self)(builder);
+    unsafe fn add_system(&mut self, stage: &mut SystemStage) {
+        (self)(stage);
     }
 }
+
+// pub trait IntoPipeFactory<Out, Params, Fut, RuntimeMarker>: Sized {
+//    fn name(&mut self) -> String {
+//        std::any::type_name::<Self>().into()
+//    }
+//
+//    fn into_pipe_factory(self, features: PipeFeatures<RuntimeMarker>) -> Box<dyn PipeFactory>;
+//}
 
 struct NonAsyncMarker;
+struct ThreadMarker;
 
-macro_rules! impl_into_pipe_factory(
+macro_rules! impl_into_pipe_factory{
     ($($out:ident)?; $($param:ident),*) => {
-        impl<F $(,$out)? $(,$param)*> IntoPipeFactory<($(AnyResult<$out>)?), ($($param,)*), NonAsyncMarker> for F
+        impl<F $(,$out)? $(,$param)*> IntoPipeFactory<($(AnyResult<$out>)?), ($($param,)*), (), BevyRuntimeMarker> for F
         where
             for<'w, 's> F:
                 FnMut($($param),*) -> ($(AnyResult<$out>)?) + Clone + Send + Sync + 'static,
@@ -84,7 +130,7 @@ macro_rules! impl_into_pipe_factory(
                     >,
             )*
         {
-            fn into_pipe_factory(self) -> Box<dyn PipeFactory> {
+            fn into_pipe_factory(self, features: PipeFeatures<BevyRuntimeMarker>) -> Box<dyn PipeFactory> {
                 // using function traits to save compile times because we would need to have multiple traits
                 // and implementations
                 let factory: Box<dyn PipeFactory> = Box::new(move |args: PipeFactoryArgs| {
@@ -95,11 +141,11 @@ macro_rules! impl_into_pipe_factory(
                             let mut errors = build_errors(&args);
                         )?
                         let storage = Arc::new(
-                            paste!{[<P$($param)*>]::build_params::<$($param),*>(args)}
+                            ParamGroupBuilder::<($($param,)*)>::build_params(args)
                                 .await
                                 .map_err(|e| AnyError::from(e))?,
                         );
-                        let adder: Box<dyn PipeSystemAdder> = Box::new(move |builder: &mut StageBuilder| {
+                        let adder: Box<dyn PipeSystemAdder> = Box::new(move |stage: &mut SystemStage| {
                             let storage = storage.clone();
                             let mut f = f.clone();
                             $(
@@ -108,7 +154,7 @@ macro_rules! impl_into_pipe_factory(
                             )?
                             let system  = move |
                                 $(
-                                    paste!{[<s_ $param>]}: <<$param as PipeParam>::State as PipeSystemParamFetch>::SystemParam,
+                                    paste!{mut [<s_ $param>]}: <<$param as PipeParam>::State as PipeSystemParamFetch>::SystemParam,
                                 )*
                                 | {
                                     // SAFETY: there won't be multiple systems running, system will be
@@ -119,19 +165,37 @@ macro_rules! impl_into_pipe_factory(
                                     };
                                     state.pipe_executing();
                                     let ($($param,)*) = state;
-                                    let result = MyResult::from((f)($(
+                                    let result;
+                                    $(
+                                        let paste!{[<s_ $param>]}: &'static mut _ = unsafe {
+                                            std::mem::transmute(&mut paste!{[<s_ $param>]})
+                                        };
+                                    )*
+                                    result = ResultConverter::from((f)($(
                                         <<$param as PipeParam>::State as PipeSystemParamFetch>::get_param(
                                             $param,
-                                            paste!{[<s_$param>]},
+                                            paste!{[<s_ $param>]},
                                         ),
                                     )*)).0;
+                                    let state = unsafe {
+                                        &mut *(&*storage as *const _ as *mut ($($param::State,)*))
+                                    };
                                     state.pipe_executed(&result);
-                                    $(
-                                        let _out: $out;
-                                        errors.handle(result);
-                                    )?
+                                    if let Err(e) = &result {
+                                        match e.downcast_ref::<PipeParamError>() {
+                                            None => {
+                                                $(
+                                                    let _out: $out;
+                                                    errors.handle(result);
+                                                )?
+                                            }
+                                            Some(&PipeParamError::Despawn) => {
+                                                // engine will take care to remove
+                                            }
+                                        }
+                                    }
                                 };
-                            builder.add_system(system);
+                            stage.add_system(system);
                         });
                         Ok(Some(adder))
                     }
@@ -141,117 +205,145 @@ macro_rules! impl_into_pipe_factory(
             }
         }
     };
-);
-
-trait MyIntoResult {
-    type Ok;
-    fn into_result(self) -> AnyResult<Self::Ok>;
 }
 
-impl MyIntoResult for () {
-    type Ok = ();
+// trait MyIntoResult {
+//    type Ok;
+//    fn into_result(self) -> AnyResult<Self::Ok>;
+//}
+// impl MyIntoResult for () {
+//    type Ok = ();
+//
+//    fn into_result(self) -> AnyResult<Self::Ok> {
+//        Ok(())
+//    }
+//}
+// impl<T> MyIntoResult for AnyResult<T> {
+//    type Ok = T;
+//
+//    fn into_result(self) -> AnyResult<Self::Ok> {
+//        self
+//    }
+//}
 
-    fn into_result(self) -> AnyResult<Self::Ok> {
-        Ok(())
-    }
-}
+// struct Runner<'s, Out: MyIntoResult, F, P, S> {
+//    state: &'s mut S,
+//    f: F,
+//    _params: PhantomData<(P, Out)>,
+//}
+// impl<'s, Out: MyIntoResult, F, P, S> Runner<'s, Out, F, P, S>
+// where
+//    F: FnMut(P) -> Out,
+//    P: PipeParam,
+//    S: PipeParamFetch<'s, Item = P> + PipeObserver,
+//{
+//    fn run(&mut self, state: &mut S) -> Out {
+//    }
+//
+//    async fn run_async(&mut self, state: &mut S) -> Out;
+//}
 
-impl<T> MyIntoResult for AnyResult<T> {
-    type Ok = T;
+// fn run<'s, Out: MyIntoResult, F, P, S>(f: &mut F, state: &'s mut S, errors: &mut ErrorsState) ->
+// Out where
+//    F: FnMut(P) -> Out,
+//    P: PipeParam,
+//    S: PipeParamFetch<'s, Item = P> + PipeObserver,
+//{
+//    state.pipe_executing();
+//    let result = (f)(state.get_param()).into_result();
+//    state.pipe_executed(&result);
+//    errors.handle(result);
+//}
 
-    fn into_result(self) -> AnyResult<Self::Ok> {
-        self
-    }
-}
+struct ResultConverter<T>(AnyResult<T>);
 
-struct Runner<'s, Out: MyIntoResult, F, P, S> {
-    state: &'s mut S,
-    f: F,
-    _params: PhantomData<(P, Out)>,
-}
-
-impl<'s, Out: MyIntoResult, F, P, S> Runner<'s, Out, F, P, S>
-where
-    F: FnMut(P) -> Out,
-    P: PipeParam,
-    S: PipeParamFetch<'s, Item = P> + PipeObserver,
-{
-    fn run(&mut self, state: &mut S) -> Out {
-    }
-
-    async fn run_async(&mut self, state: &mut S) -> Out;
-}
-
-fn run<'s, Out: MyIntoResult, F, P, S>(f: &mut F, state: &'s mut S, errors: &mut ErrorsState) -> Out
-where
-    F: FnMut(P) -> Out,
-    P: PipeParam,
-    S: PipeParamFetch<'s, Item = P> + PipeObserver,
-{
-    state.pipe_executing();
-    let result = (f)(state.get_param()).into_result();
-    state.pipe_executed(&result);
-    errors.handle(result);
-}
-
-struct MyResult<T>(AnyResult<T>);
-
-impl From<()> for MyResult<()> {
+impl From<()> for ResultConverter<()> {
     fn from(_: ()) -> Self {
         Self(Ok(()))
     }
 }
 
-impl<T> From<AnyResult<T>> for MyResult<T> {
+impl<T> From<AnyResult<T>> for ResultConverter<T> {
     fn from(r: AnyResult<T>) -> Self {
         Self(r)
     }
 }
 
-macro_rules! impl_into_async_pipe_factory {
+use bevy_ecs::{
+    prelude::Res,
+    world::{World, WorldId},
+};
+
+// pub struct PipeExecutor<F, BevyState, State, Params, Fut, Out> {
+//    f: F,
+//    state: State,
+//    params: PhantomData<fn() -> (Params, Out)>,
+//}
+
+//#[async_trait]
+// pub trait PipeExecutor<Params, Fut, Out> {
+//    async fn build(args: PipeFactoryArgs) -> Self;
+//    fn execute(&mut self) -> Fut;
+//    fn executed(&mut self, result: &AnyResult<Out>);
+//}
+
+macro_rules! impl_into_thread_pipe_factory {
     ($($out:ident)?; $($param:ident),*) => {
-        impl<F, $($param,)* Fut $(,$out)?> IntoPipeFactory<($(AnyResult<$out>)?), ($($param,)*), Fut> for F
+        impl<F, $($param,)* $($out)?> IntoPipeFactory<($(AnyResult<$out>)?), ($($param,)*), (), SyncRuntimeMarker> for F
         where
-            for<'w, 's> F: FnMut($($param),*) -> Fut + Clone + Send + Sync + 'static,
-            Fut: Future<Output = ($(AnyResult<$out>)?)> + Send,
+            for<'w, 's> F: FnMut($($param),*) -> ($(AnyResult<$out>)?) + Clone + Send + Sync + 'static,
             $($out: Send,)?
             $(
                 $param: PipeParam + Send + 'static,
-                for<'s> $param::State: PipeParamFetch<'s, Item = $param> + PipeObserver + Send + Sync,
+                $param::State: PipeParamFetch<'static, Item = $param> + PipeObserver + Send + Sync,
                 <$param as PipeParam>::State: PipeParamState,
             )*
         {
-            fn into_pipe_factory(self) -> Box<dyn PipeFactory> {
+            fn into_pipe_factory(self, features: PipeFeatures<SyncRuntimeMarker>) -> Box<dyn PipeFactory> {
                 // using function traits to save compile times because we would need to have multiple traits
                 // and implementations
                 let factory: Box<dyn PipeFactory> = Box::new(move |args: PipeFactoryArgs| {
                     let mut f = self.clone();
-                    $(
-                        let _out: $out;
-                        let mut errors: ErrorsState;
-                        errors = build_errors(&args);
-                    )?
+                    let features = features.clone();
                     async move {
+                        let world = args.world.clone();
+                        let pipeline_id = args.config.pipeline_id;
                         let mut state =
-                            paste!{[<P$($param)*>]::build_params::<$($param),*>(args)}
+                            ParamGroupBuilder::<($($param,)*)>::build_params(args)
                                 .await
                                 .map_err(|e| AnyError::from(e))?;
-                        async move {
-                            loop {
-                                state.pipe_executing();
-                                let result;
-                                {
-                                    let ($($param,)*) = &mut state;
-                                    result = MyResult::from((f)($($param.get_param()),*).await).0;
-                                }
-                                state.pipe_executed(&result);
+                        let mut world = world.lock(0).unwrap();
+                        $(
+                            let _out: $out;
+                            let mut errors = ErrorsState::new(pipeline_id, &*world);
+                        )?
+                        spawn::<_, Pending<()>>(&features.runtime_label, &mut *world, Ok(move || {
+                            state.pipe_executing();
+                            let result;
+                            {
+                                let ($($param,)*) = &mut state;
                                 $(
-                                    let _out: $out;
-                                    errors.handle(result);
-                                )?
+                                    let paste!{[<s_ $param>]}: &'static mut $param::State = unsafe {
+                                        std::mem::transmute($param)
+                                    };
+                                )*
+                                result = ResultConverter::from((f)($(paste!{[<s_ $param>]}.get_param()),*)).0;
                             }
-                        }
-                        .spawn();
+                            state.pipe_executed(&result);
+                            if let Err(e) = &result {
+                                match e.downcast_ref::<PipeParamError>() {
+                                    None => {}
+                                    Some(&PipeParamError::Despawn) => {
+                                        return ControlFlow::DESPAWN;
+                                    }
+                                }
+                            }
+                            $(
+                                let _out: $out;
+                                errors.handle(result);
+                            )?
+                            ControlFlow::default()
+                        }));
                         Ok(None)
                     }
                     .boxed()
@@ -262,10 +354,84 @@ macro_rules! impl_into_async_pipe_factory {
     };
 }
 
-fn build_errors(args: &PipeFactoryArgs) -> ErrorsState {
-    let world = args.world.lock(0).unwrap();
-    ErrorsState::new(args.config.pipeline_id, &*world)
+macro_rules! impl_into_async_pipe_factory {
+    ($($out:ident)?; $($param:ident),*) => {
+        impl<F, $($param,)* Fut $(,$out)?> IntoPipeFactory<($(AnyResult<$out>)?), ($($param,)*), Fut, AsyncRuntimeMarker> for F
+        where
+            for<'w, 's> F: FnMut($($param),*) -> Fut + Clone + Send + Sync + 'static,
+            Fut: Future<Output = ($(AnyResult<$out>)?)> + Send,
+            $($out: Send,)?
+            $(
+                $param: PipeParam + Send + 'static,
+                for<'s> $param::State: PipeParamFetch<'static, Item = $param> + PipeObserver + Send + Sync,
+                <$param as PipeParam>::State: PipeParamState,
+            )*
+        {
+            fn into_pipe_factory(self, features: PipeFeatures<AsyncRuntimeMarker>) -> Box<dyn PipeFactory> {
+                // using function traits to save compile times because we would need to have multiple traits
+                // and implementations
+                let factory: Box<dyn PipeFactory> = Box::new(move |args: PipeFactoryArgs| {
+                    let mut f = self.clone();
+                    let features = features.clone();
+                    let config = args.config.clone();
+                    async move {
+                        let world = args.world.clone();
+                        let pipeline_id = args.config.pipeline_id;
+                        let mut state =
+                            ParamGroupBuilder::<($($param,)*)>::build_params(args)
+                                .await
+                                .map_err(|e| AnyError::from(e))?;
+                        let mut world = world.lock(0).unwrap();
+                        $(
+                            let _out: $out;
+                            let mut errors = ErrorsState::new(pipeline_id, &*world);
+                        )?
+                        spawn::<fn() -> ControlFlow, _>(&features.runtime_label, &mut *world, Err(async move {
+                            loop {
+                                state.pipe_executing();
+                                let result;
+                                let ($($param,)*) = &mut state;
+                                $(
+                                    let paste!{[<s_ $param>]}: &'static mut $param::State = unsafe {
+                                        std::mem::transmute($param)
+                                    };
+                                )*
+                                result = ResultConverter::from((f)($(paste!{[<s_ $param>]}.get_param()),*).await).0;
+                                state.pipe_executed(&result);
+                                if let Err(e) = &result {
+                                    match e.downcast_ref::<PipeParamError>() {
+                                        None => {}
+                                        Some(&PipeParamError::Despawn) => {
+                                            break;
+                                        }
+                                    }
+                                }
+                                $(
+                                    let _out: $out;
+                                    errors.handle(result);
+                                )?
+                            }
+                        }
+//                    .instrument(trace_span!("pipeline", name = pipeline_name, id = pipeline_id))
+//                    .instrument(trace_span!("pipe", name = pipe_name, id = pipe_id))
+                        ));
+                        Ok(None)
+                    }
+                    .instrument(trace_span!("pipeline_build", name = config.pipeline.name, id = ?config.pipeline_id))
+                    .instrument(trace_span!("pipe_build", name = config.config.name, id = ?config.pipe_id))
+                    .spawn()
+                    .boxed()
+                });
+                factory
+            }
+        }
+    };
 }
+
+// fn build_errors(args: &PipeFactoryArgs) -> ErrorsState {
+//    let world = args.world.lock(0).unwrap();
+//    ErrorsState::new(args.config.pipeline_id, &*world)
+//}
 
 // fn assert_fn_mut<T: Send + Sync + 'static, F0: SystemParam, F1: SystemParam>(t: T) -> T
 // where
@@ -286,29 +452,11 @@ macro_rules! impl_into_pipe_factories {
     ($($param:ident),*) => {
         impl_into_async_pipe_factory!(Out; $($param),*);
         impl_into_async_pipe_factory!(; $($param),*);
+        impl_into_thread_pipe_factory!(Out; $($param),*);
+        impl_into_thread_pipe_factory!(; $($param),*);
         impl_into_pipe_factory!(Out; $($param),*);
         impl_into_pipe_factory!(; $($param),*);
     }
 }
 
-all_tuples!(impl_into_pipe_factories, 0, 16, F);
-
-enum MyFut<F> {
-    Ready(i32),
-    Fut(F),
-}
-
-pub async fn process(val: &mut i32) {
-    match f() {
-        MyFut::Ready(f) => {
-            *val -= f;
-        }
-        MyFut::Fut(f) => {
-            *val += f.await;
-        }
-    }
-}
-
-fn f() -> MyFut<impl Future<Output = i32>> {
-    MyFut::Fut(async { 69 })
-}
+// all_tuples!(impl_into_pipe_factories, 0, 16, F);

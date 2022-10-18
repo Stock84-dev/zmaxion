@@ -1,0 +1,12 @@
+[package]
+name = "zmaxion_flow"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zmaxion_rt = { path = "../zmaxion_rt" }
+zmaxion_utils = { path = "../zmaxion_utils" }
+ergnomics = { path = "../ergnomics" }
+bevy_derive = { version = "0.7.0", default-features = false }
+futures-util = "0.3.17"
+pin-project-lite = "0.2.9"

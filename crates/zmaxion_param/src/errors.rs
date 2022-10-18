@@ -7,15 +7,33 @@ use async_trait::async_trait;
 use bevy_ecs::{
     archetype::Archetype,
     prelude::*,
-    system::{SystemMeta, SystemParam, SystemParamState},
+    system::{SystemMeta, SystemParam, SystemParamFetch, SystemParamState},
 };
+use thiserror::Error;
 use zmaxion_core::{components::Arcc, prelude::GlobalEntity, resources::LogErrorsSynchronously};
 use zmaxion_utils::prelude::*;
 
 use crate::{
-    AsyncTopic, AsyncTopicWriterState, ParamBuilder, PipeFactoryArgs, PipeParam, PipeParamFetch,
-    PipeParamState, TopicParam, TopicParamKind,
+    AsyncReaderState, AsyncTopic, AsyncTopicInner, AsyncWriterState, ParamBuilder, PipeFactoryArgs,
+    PipeObserver, PipeParam, PipeParamFetch, PipeParamState, PipeSystemParamFetch, TopicParam,
+    TopicParamKind,
 };
+
+#[derive(Error, Debug)]
+pub enum PipeParamError {
+    #[error("Pipe should despawn.")]
+    Despawn,
+    #[error("Invalid pipe parameter at position {0:} (zero-indexed), expected `{1:}`.")]
+    InvalidPipeParam(usize, String),
+    #[error("Failed to build a `{}` param, at index {}", name, arg_i)]
+    Build {
+        source: AnyError,
+        arg_i: usize,
+        name: String,
+    },
+    #[error("{0:?}")]
+    Other(#[from] AnyError),
+}
 
 pub struct ErrorEvent {
     pub error: AnyError,
@@ -97,10 +115,12 @@ impl ErrorsState {
         if self.log.load(Ordering::SeqCst) {
             error!("{:?}", e);
         }
-        self.writer.write_raw(ErrorEvent {
-            error: e,
-            pipeline_id,
-        });
+        unsafe {
+            self.writer.extend_one(ErrorEvent {
+                error: e,
+                pipeline_id,
+            });
+        }
     }
 }
 
@@ -122,18 +142,21 @@ impl<'s> PipeParamFetch<'s> for ErrorsState {
     }
 }
 
+impl PipeObserver for ErrorsState {
+}
+
 #[derive(Component)]
 pub struct ErrorsState {
     pipeline_id: Entity,
     log: Arc<AtomicBool>,
-    writer: AsyncTopicWriterState<ErrorEvent>,
+    writer: AsyncWriterState<ErrorEvent>,
 }
 
 impl ErrorsState {
     pub fn new(pipeline_id: Entity, world: &World) -> Self {
         let topic = world
             .entity(pipeline_id)
-            .get::<Arcc<AsyncTopic<ErrorEvent>>>()
+            .get::<AsyncTopic<ErrorEvent>>()
             .unwrap();
         Self {
             pipeline_id,
@@ -142,7 +165,7 @@ impl ErrorsState {
                 .unwrap()
                 .0
                 .clone(),
-            writer: AsyncTopicWriterState::from(Arc::clone(&*topic)),
+            writer: AsyncWriterState::from(topic.clone()),
         }
     }
 }
@@ -152,7 +175,7 @@ impl Clone for ErrorsState {
         Self {
             pipeline_id: self.pipeline_id,
             log: self.log.clone(),
-            writer: AsyncTopicWriterState::from(self.writer.topic().clone()),
+            writer: AsyncWriterState::from(self.writer.topic().clone()),
         }
     }
 }
@@ -168,6 +191,43 @@ impl PipeParamState for ErrorsState {
         Self: Sized,
     {
         let id = builder.command().pipeline_id;
-        Ok(Self::new(id, &*builder.world()))
+        Ok(Self::new(id, &*builder.world().await))
+    }
+}
+
+pub fn handle_errors<Out>(In(result): In<AnyResult<Out>>, errors: Errors) {
+    errors.handle(result);
+}
+
+impl<'s> SystemParam for Errors<'s> {
+    type Fetch = ErrorsState;
+}
+
+impl<'w, 's> SystemParamFetch<'w, 's> for ErrorsState {
+    type Item = Errors<'s>;
+
+    unsafe fn get_param(
+        state: &'s mut Self,
+        system_meta: &SystemMeta,
+        world: &'w World,
+        change_tick: u32,
+    ) -> Self::Item {
+        Errors::from(&*state)
+    }
+}
+
+impl<'w, 's> PipeSystemParamFetch<'w, 's> for ErrorsState {
+    type PipeParam = Errors<'s>;
+    type SystemParam = ();
+
+    fn get_param(&'s mut self, system_param: &'s mut Self::SystemParam) -> Self::PipeParam {
+        Errors::from(&*self)
+    }
+}
+
+unsafe impl SystemParamState for ErrorsState {
+    fn init(world: &mut World, system_meta: &mut SystemMeta) -> Self {
+        let id = world.resource::<GlobalEntity>().0;
+        ErrorsState::new(id, world)
     }
 }

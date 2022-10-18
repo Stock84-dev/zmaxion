@@ -1,12 +1,23 @@
 use std::{mem::swap, sync::Arc};
 
+use bevy_app::{App, StartupStage};
+use bevy_ecs::{schedule::IntoSystemDescriptor, system::SystemState};
 use bevy_reflect::{GetTypeRegistration, TypeRegistryArc};
+use ergnomics::prelude::*;
 pub use zmaxion_core::prelude::*;
 use zmaxion_core::{
-    models::{StaticEstimations, TopicSpawnerArgs},
-    resources::LoadedConnectors,
+    models::{
+        DynPipeFeatures, PipeDeclaration, PipeFeatures, StaticEstimations, TopicFactory,
+        TopicHandler, TopicSpawnerArgs,
+    },
+    resources::{LoadedConnectors, TopicFactories, TopicHandlers},
 };
-use zmaxion_topic::SystemTopic;
+use zmaxion_param::{prelude::handle_errors, AsyncTopic};
+use zmaxion_pipe::{resources::PipeDefinitions, IntoPipeFactory, PipeDefinition};
+use zmaxion_rt::{
+    pipe_runtimes::RuntimeMarker, AsyncMutex, AsyncMutexGuard, BlockFutureExt, SpawnFutureExt,
+};
+use zmaxion_topic::{HasTopicFeatures, SystemTopic};
 use zmaxion_utils::prelude::*;
 
 use crate::app::Schedules;
@@ -14,15 +25,15 @@ pub use crate::prelude::*;
 
 pub struct AppBuilder<'a> {
     pub schedules: &'a mut [Schedule; 3],
-    pub world: PrioMutexGuard<'a, World>,
-    pub world_arc: Arc<PrioMutex<World>>,
+    pub world: AsyncMutexGuard<'a, World>,
+    pub world_arc: Arc<AsyncMutex<World>>,
 }
 
 impl<'a> AppBuilder<'a> {
     pub fn new(app: &'a mut Zmaxion) -> Self {
         Self {
             schedules: &mut app.schedules,
-            world: app.world.lock(0).unwrap(),
+            world: app.world.lock().block(),
             world_arc: app.world.clone(),
         }
     }
@@ -61,15 +72,13 @@ impl<'a> AppBuilder<'a> {
 
     /// Plugins that create custom topic must register the name of a topic kind
     pub fn add_connector(&mut self, kind: impl Into<String>) -> &mut Self {
-        if !self
-            .world
-            .get_resource_mut::<LoadedConnectors>()
-            .unwrap()
-            .0
-            .insert(kind.into())
-        {
-            panic!("Connector already registered");
+        let mut connectors = self.world.get_resource_mut::<LoadedConnectors>().unwrap();
+        let kind = kind.into();
+
+        if connectors.0.contains(&kind) {
+            panic!("Connector {} already registered", kind);
         }
+        connectors.0.insert(kind);
         self
     }
 
@@ -79,9 +88,9 @@ impl<'a> AppBuilder<'a> {
     }
 
     pub fn add_system_topic<T: Resource>(&mut self) -> &mut Self {
-        self.register_topic::<T>();
-        let id = **self.world.get_resource::<GlobalEntity>().unwrap();
-        let topic = SystemTopic::<T>::new();
+        self.register_specific_topic::<SystemTopic<T>>();
+        let id = self.world.get_resource::<GlobalEntity>().unwrap().0;
+        let topic = SystemTopic::<T>::default();
         self.world.entity_mut(id).insert(topic);
         self
     }
@@ -90,26 +99,61 @@ impl<'a> AppBuilder<'a> {
     //        self.register_topic::<Stateful<T>>()
     //    }
 
-    pub fn register_topic<T: Resource>(&mut self) -> &mut Self {
-        fn topic_spawner<T: Resource>(args: &mut TopicSpawnerArgs) {
-            debug!("{:#?}", T::type_name());
-            debug!("{:#?}", args.commands.id());
-            args.commands.insert(MemTopic::<T>::new());
-        }
-        let mut topic_systems = self.world.get_resource_mut::<TopicDefinitions>().unwrap();
-        let system = MemTopic::<T>::update_system;
+    pub fn add_topic_handler(&mut self, handler: TopicHandler) {
+        self.world.resource_mut::<TopicHandlers>().0.insert(handler);
+    }
 
-        if topic_systems
+    pub fn register_specific_topic<T: Component + Default + HasTopicFeatures>(
+        &mut self,
+    ) -> &mut Self {
+        fn topic_factory<T: Component + Default>(args: &mut TopicSpawnerArgs) {
+            args.commands.insert(T::default());
+        }
+        let mut topic_factories = self.world.resource_mut::<TopicFactories>();
+
+        if topic_factories
             .0
             .insert(
                 T::type_name().to_string(),
-                TopicDefinition {
-                    spawner: topic_spawner::<T>,
+                TopicFactory {
+                    factory: topic_factory::<T>,
                 },
             )
             .is_none()
         {
-            self.schedules[Schedules::Post as usize].add_system_to_stage(CoreStage::Last, system);
+            let stage = stage_mut(&mut self.schedules, Schedules::Post, &CoreStage::Last);
+            T::add_system(stage);
+        }
+        self
+    }
+
+    pub fn register_topic<T: Resource>(&mut self) -> &mut Self {
+        let mut topic_factories = self.world.resource_mut::<TopicFactories>();
+
+        if topic_factories
+            .0
+            .insert(
+                T::type_name().to_string(),
+                TopicFactory {
+                    factory: zmaxion_topics::topic_factory::<T>,
+                },
+            )
+            .is_none()
+        {
+            let handlers = self.world.resource::<TopicHandlers>();
+            let schedule = &mut self.schedules[Schedules::Post as usize];
+            for handler in &handlers.0 {
+                match handler {
+                    TopicHandler::System => {
+                        schedule
+                            .add_system_to_stage(CoreStage::Last, SystemTopic::<T>::update_system);
+                    }
+                    TopicHandler::Async => {
+                        schedule
+                            .add_system_to_stage(CoreStage::Last, AsyncTopic::<T>::update_system);
+                    }
+                }
+            }
         }
         self
     }
@@ -136,11 +180,6 @@ impl<'a> AppBuilder<'a> {
         }
     }
 
-    //    pub fn add_raw_plugin(&mut self, plugin: impl Plugin) -> &mut Self {
-    //        self.inner.add_plugin(plugin);
-    //        self
-    //    }
-
     pub fn add_system<Params>(&mut self, desc: impl IntoSystemDescriptor<Params>) -> &mut Self {
         self.schedules[Schedules::Post as usize]
             .stage(CoreStage::Update, |stage: &mut SystemStage| {
@@ -154,6 +193,7 @@ impl<'a> AppBuilder<'a> {
         S: IntoSystem<(), AnyResult<Out>, Params>,
     {
         self.add_system(desc.chain(handle_errors::<Out>));
+
         self
     }
 
@@ -162,7 +202,7 @@ impl<'a> AppBuilder<'a> {
         desc: impl IntoSystemDescriptor<Params>,
     ) -> &mut Self {
         self.schedules[Schedules::Post as usize]
-            .stage(CoreStage::Startup, |schedule: &mut Schedule| {
+            .stage(StartupStage::Startup, |schedule: &mut Schedule| {
                 schedule.add_system_to_stage(StartupStage::Startup, desc)
             });
         self
@@ -176,24 +216,24 @@ impl<'a> AppBuilder<'a> {
         self
     }
 
-    pub fn register_pipe<Out, Params, Marker, S: IntoPipeFactory<Out, Params, Marker> + 'static>(
+    pub fn register_pipe<P, Out, Params, Fut, Marker, Rm>(
         &mut self,
-        s: S,
-        estimations: Option<StaticEstimations>,
-    ) -> &mut Self {
-        let mut defs = self.world.get_resource_mut::<PipeDefs>().unwrap();
-        let name = S::type_name();
-        if defs.0.contains_key(name) {
+        mut pipe: P,
+        declaration: PipeDeclaration<Rm>,
+    ) -> &mut Self
+    where
+        P: IntoPipeFactory<Out, Params, Fut, Marker, Rm>,
+        Rm: RuntimeMarker,
+    {
+        let mut definitions = self.world.resource_mut::<PipeDefinitions>();
+        let name = pipe.name();
+        if definitions.0.contains_key(&name) {
             panic!("Pipe `{}` already registered", name);
         }
-        defs.0.insert(
-            name,
-            PipeFactoryContainer {
-                factory: s.into_pipe_factory(),
-                kind: S::KIND,
-                estimations,
-            },
-        );
+        let factory = pipe.into_pipe_factory(declaration);
+        definitions
+            .0
+            .insert(name.into(), PipeDefinition { factory });
         self
     }
 
@@ -236,7 +276,7 @@ impl<'a, Label: StageLabel + Clone> SystemAdder<'a, Label> {
     pub fn add_startup_system<Params>(mut self, desc: impl IntoSystemDescriptor<Params>) -> Self {
         let stage = self.current_stage.clone();
         self.builder.schedules[self.current_schedule]
-            .stage(CoreStage::Startup, |schedule: &mut Schedule| {
+            .stage(StartupStage::Startup, |schedule: &mut Schedule| {
                 schedule.add_system_to_stage(stage, desc)
             });
         self
@@ -259,4 +299,14 @@ impl<'a, T> SystemAdder<'a, T> {
     pub fn finish(self) -> &'a mut AppBuilder<'a> {
         self.builder
     }
+}
+
+fn stage_mut<'a>(
+    schedules: &'a mut [Schedule; 3],
+    schedule: Schedules,
+    stage_label: &dyn StageLabel,
+) -> &'a mut SystemStage {
+    schedules[schedule as usize]
+        .get_stage_mut(&CoreStage::Last)
+        .expect_with(|| format!("{:?} doesn't have {:?}", schedule, stage_label))
 }

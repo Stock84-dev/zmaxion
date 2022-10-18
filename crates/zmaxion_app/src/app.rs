@@ -26,12 +26,16 @@ mod builder;
 
 pub use builder::AppBuilder;
 use zmaxion_core::{
-    messages::{AddSystem, SpawnPipeline},
+    messages::{AddSystem, PipeSpawned, SpawnPipe, SpawnPipeline},
+    prelude::WorldExt,
     resources::{Exit, Reschedule},
 };
+use zmaxion_param::PipeFactoryArgs;
+use zmaxion_pipe::{resources::PipeDefinitions, Pipe};
+use zmaxion_rt::{AsyncMutex, BlockFutureExt, SpawnFutureExt};
 use zmaxion_topic::prelude::{GlobalSystemReader, GlobalSystemWriter};
-use zmaxion_utils::prelude::PrioMutex;
 
+#[derive(Debug, Clone, Copy)]
 pub enum Schedules {
     Pre = 0,
     Main = 1,
@@ -40,7 +44,7 @@ pub enum Schedules {
 
 pub struct Zmaxion {
     pub schedules: [Schedule; 3],
-    pub world: Arc<PrioMutex<World>>,
+    pub world: Arc<AsyncMutex<World>>,
 }
 
 impl Zmaxion {
@@ -54,7 +58,7 @@ impl Zmaxion {
     pub fn empty() -> Self {
         Self {
             schedules: [Default::default(), Default::default(), Default::default()],
-            world: Arc::new(PrioMutex::new(World::new())),
+            world: Arc::new(AsyncMutex::new(World::new())),
         }
     }
 
@@ -64,9 +68,9 @@ impl Zmaxion {
 
     /// Runs startup stages, does nothing if already called
     pub fn startup(&mut self) {
-        let mut world = self.world.lock(0).unwrap();
+        let mut world = self.world.lock().block();
         for schedule in &mut self.schedules {
-            schedule.stage(CoreStage::Startup, |schedule: &mut Schedule| {
+            schedule.stage(StartupSchedule, |schedule: &mut Schedule| {
                 schedule.run(&mut *world);
                 schedule
             });
@@ -74,7 +78,7 @@ impl Zmaxion {
     }
 
     pub fn spawn_pipeline(&self, config: SpawnPipeline) {
-        let mut world = self.world.lock(0).unwrap();
+        let mut world = self.world.lock().block();
         let mut system_state: SystemState<GlobalSystemWriter<SpawnPipeline>> =
             SystemState::new(&mut *world);
         let mut writer = system_state.get_mut(&mut *world);
@@ -82,50 +86,42 @@ impl Zmaxion {
     }
 
     pub fn run(&mut self) {
-        let topic = {
-            let mut world = self.world.lock(0).unwrap();
-            GlobalSystemReaderState::<AddSystem>::from(&*world)
-        };
         self.startup();
         let mut epoch = 0;
         loop {
             trace!("Epoch: {}", epoch);
-            let mut world = self.world.lock(usize::MAX).unwrap();
-            for schedule in &mut self.schedules {
-                schedule.run(&mut world);
+            let mut world = self.world.lock().block();
+            {
+                for schedule in &mut self.schedules {
+                    schedule.run(&mut world);
+                }
             }
+            let schedule = &mut self.schedules[Schedules::Main as usize];
 
             if world.remove_resource::<Reschedule>().is_some() {
-                self.schedules[Schedules::Main as usize] = Schedule::default();
-                let mut query = world.query::<(&PipeComponent, &Name)>();
-                for (component, name) in query.iter(&world) {
-                    if let Some(system) = component.factory.system() {
-                        let defs = world.get_resource::<PipeDefs>().unwrap();
-                        match &defs.0.get(name.0.as_str()).unwrap().kind {
-                            PipeKind::Bevy => {
-                                self.schedules[Schedules::Main as usize]
-                                    .add_system_to_stage(CoreStage::Update, system);
-                            }
-                            Async => {}
+                *schedule = Schedule::default();
+                let mut state = SystemState::<Query<&mut Pipe>>::new(&mut world);
+                let mut query = state.get_mut(&mut world);
+                let stage: &mut SystemStage = schedule.get_stage_mut(&CoreStage::Update).unwrap();
+                for mut pipe in query.iter_mut() {
+                    if let Some(adder) = &mut pipe.adder {
+                        unsafe {
+                            adder.add_system(stage);
                         }
                     }
                 }
             } else {
-                let mut system_state: SystemState<(
-                    GlobalSystemReader<SpawnPipeline>,
-                    Res<PipeDefs>,
-                    Query<(&PipeComponent, &Name)>,
-                )> = SystemState::new(&mut *world);
-                let (reader, defs, query) = system_state.get_mut(&mut *world);
-                for system in reader.read() {
-                    let (component, name) = query.get(system.entity).unwrap();
-                    if let Some(system) = component.factory.system() {
-                        match &defs.0.get(name.0.as_str()).unwrap().kind {
-                            PipeKind::Bevy => {
-                                self.schedules[Schedules::Main as usize]
-                                    .add_system_to_stage(CoreStage::Update, system);
-                            }
-                            Async => {}
+                let mut state =
+                    SystemState::<(GlobalSystemReader<PipeSpawned>, Query<&mut Pipe>)>::new(
+                        &mut world,
+                    );
+                let (reader, mut query) = state.get_mut(&mut world);
+                let stage: &mut SystemStage = schedule.get_stage_mut(&CoreStage::Update).unwrap();
+                for pipe in reader.read() {
+                    let mut pipe = query.get_mut(pipe.0.pipe_id).unwrap();
+                    if let Some(adder) = &mut pipe.adder {
+                        unsafe {
+                            adder.add_system(stage);
                         }
                     }
                 }
@@ -140,14 +136,14 @@ impl Zmaxion {
 
 impl Default for Zmaxion {
     fn default() -> Self {
-        let main_app = App::default();
+        let mut main_app = App::default();
         let mut app0 = App::empty();
         app0.add_default_stages();
         let mut app1 = App::empty();
         app1.add_default_stages();
         let mut zmaxion = Zmaxion {
             schedules: [app0.schedule, app1.schedule, main_app.schedule],
-            world: Arc::new(PrioMutex::new(main_app.world)),
+            world: Arc::new(AsyncMutex::new(main_app.world)),
         };
         zmaxion
     }

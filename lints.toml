@@ -1,0 +1,6 @@
+#
+# For all clippy lints please visit: https://rust-lang.github.io/rust-clippy/master/
+#
+deny = ['unused_must_use']
+allow = []
+warn = []

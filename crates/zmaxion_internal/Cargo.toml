@@ -13,6 +13,7 @@ dynamic = []
 
 [dependencies]
 zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
+zmaxion_derive = { path = "../zmaxion_derive", version = "0.1.0" }
 zmaxion_param = { path = "../zmaxion_param", version = "0.1.0" }
 zmaxion_topic = { path = "../zmaxion_topic", version = "0.1.0" }
 zmaxion_pipe = { path = "../zmaxion_pipe", version = "0.1.0" }

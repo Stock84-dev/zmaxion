@@ -13,5 +13,11 @@ zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }
 zmaxion_param = { path = "../zmaxion_param", version = "0.1.0" }
 zmaxion_utils = { path = "../zmaxion_utils", version = "0.1.0" }
 zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
+zmaxion_flow = { path = "../zmaxion_flow", version = "0.1.0" }
+ergnomics = { path = "../ergnomics", version = "0.1.0" }
+bevy_reflect = "0.7.0"
 async-trait = "0.1.51"
 cache-padded = "1.2.0"
+petgraph = "0.6.2"
+futures-util = "0.3.21"
+futures-lite = "1.12.0"

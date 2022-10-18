@@ -9,7 +9,7 @@ use std::{
 use async_trait::async_trait;
 use zmaxion_core::{models::TopicRef, prelude::*};
 use zmaxion_param::{
-    ControlFlow, ParamBuilder, PipeObserver, PipeParam, PipeParamFetch, PipeParamImpl,
+    IntoParamStateMut, ParamBuilder, PipeObserver, PipeParam, PipeParamFetch, PipeParamImpl,
     PipeParamState, PipeParamStateImpl, TopicParam, TopicParamKind,
 };
 use zmaxion_rt::{AsyncMutex, AsyncMutexGuard};
@@ -45,37 +45,33 @@ impl<T> Clone for DynReaderState<T> {
 #[async_trait]
 pub trait ReaderState<T>: Send + Sync {
     /// The caller must not call this function multiple times so that topic read semantics of a pipe
-    /// can withhold.
-    async unsafe fn read<'a>(&'a mut self) -> ReadGuard<'a, T>;
+    /// can withhold. Can return and Err if Pipe is despawning.
+    async unsafe fn read<'a>(&'a mut self) -> AnyResult<ReadGuard<'a, T>>;
     /// The caller must not call this function multiple times so that topic read semantics of a pipe
     /// can withhold.
-    unsafe fn try_read<'a>(&'a mut self) -> ReadGuard<'a, T>;
+    unsafe fn try_read<'a>(&'a mut self) -> Option<ReadGuard<'a, T>>;
 }
 
 #[async_trait]
 pub trait TopicReader<'a, T>: Sized + Send + Sync {
-    async fn read(self) -> ReadGuard<'a, T>;
-    fn try_read(self) -> ReadGuard<'a, T>;
-}
-
-pub trait AsStateMut<'s> {
-    type Mut;
-    fn as_mut(&mut self) -> &'s mut Self::Mut;
+    // If this method fails inside a pipe, then it should get forwarded
+    async fn read(self) -> AnyResult<ReadGuard<'a, T>>;
+    fn try_read(self) -> Option<ReadGuard<'a, T>>;
 }
 
 #[async_trait]
 impl<'s, T, P: Send + Sync> TopicReader<'s, T> for P
 where
     T: Resource,
-    P: PipeParam + AsStateMut<'s, Mut = P::State> + 's,
+    P: IntoParamStateMut<'s> + 's,
     P::State: ReaderState<T> + 's,
 {
-    async fn read(mut self) -> ReadGuard<'s, T> {
-        unsafe { self.as_mut().read().await }
+    async fn read(mut self) -> AnyResult<ReadGuard<'s, T>> {
+        unsafe { self.into_state_mut().read().await }
     }
 
-    fn try_read(mut self) -> ReadGuard<'s, T> {
-        unsafe { self.as_mut().try_read() }
+    fn try_read(mut self) -> Option<ReadGuard<'s, T>> {
+        unsafe { self.into_state_mut().try_read() }
     }
 }
 
@@ -91,7 +87,7 @@ impl<T: Resource> PipeParamState for DynReaderState<T> {
     {
         let id = builder.command().pipeline_id;
         Ok(DynReaderState::clone(
-            builder.world().get::<DynReaderState<T>>(id).unwrap(),
+            builder.world().await.get::<DynReaderState<T>>(id).unwrap(),
         ))
     }
 }
@@ -123,40 +119,72 @@ impl<'a, T> DynReader<'a, T> {
 }
 
 #[async_trait]
-impl<'a, T> TopicReader<'a, T> for AsyncMutexGuard<'a, Box<dyn ReaderState<T>>> {
-    async fn read(mut self) -> ReadGuard<'a, T> {
-        unsafe { self.read().await }
+impl<'s, T> ReaderState<T> for AsyncMutexGuard<'s, Box<dyn ReaderState<T>>> {
+    async unsafe fn read<'a>(&'a mut self) -> AnyResult<ReadGuard<'a, T>> {
+        self.deref_mut().read().await
     }
 
-    fn try_read(mut self) -> ReadGuard<'a, T> {
-        unsafe { self.try_read() }
+    unsafe fn try_read<'a>(&'a mut self) -> Option<ReadGuard<'a, T>> {
+        self.deref_mut().try_read()
     }
 }
 
 #[async_trait]
 pub trait TopicWriter<T>: Send + Sync {
-    fn write(self, value: T);
+    fn extend_one(self, value: T);
+    fn extend_from_slice(self, data: &[T])
+    where
+        T: Clone;
+    fn extend<I>(self, iter: I)
+    where
+        I: IntoIterator<Item = T>;
+    fn extend_dyn(self, iter: &mut dyn Iterator<Item = T>);
 }
 
 #[async_trait]
 pub trait WriterState<T>: Send + Sync {
-    unsafe fn write_slice(&mut self, data: &[T])
+    unsafe fn extend_one(&mut self, value: T);
+    unsafe fn extend_from_slice(&mut self, data: &[T])
     where
         T: Clone;
-    unsafe fn write(&mut self, value: T);
+    unsafe fn extend<I>(&mut self, iter: I)
+    where
+        Self: Sized,
+        I: IntoIterator<Item = T>;
+    unsafe fn extend_dyn(&mut self, iter: &mut dyn Iterator<Item = T>);
 }
 
 #[async_trait]
-impl<T, P: Send + Sync> TopicWriter<T> for P
+impl<'s, T, P: Send + Sync> TopicWriter<T> for P
 where
     T: Resource,
-    for<'a> P: PipeParam + AsStateMut<'a, Mut = P::State>,
-    P::State: WriterState<T>,
+    P: IntoParamStateMut<'s>,
+    P::State: WriterState<T> + 's,
 {
-    fn write(mut self, value: T) {
+    fn extend_one(self, value: T) {
         unsafe {
-            self.as_mut().write(value);
+            self.into_state_mut().extend_one(value);
         }
+    }
+
+    fn extend_from_slice(self, data: &[T])
+    where
+        T: Clone,
+    {
+        unsafe {
+            self.into_state_mut().extend_from_slice(data);
+        }
+    }
+
+    fn extend<I>(self, iter: I)
+    where
+        I: IntoIterator<Item = T>,
+    {
+        unsafe { self.into_state_mut().extend(iter) }
+    }
+
+    fn extend_dyn(self, iter: &mut dyn Iterator<Item = T>) {
+        unsafe { self.into_state_mut().extend(iter) }
     }
 }
 
@@ -172,7 +200,7 @@ impl<T: Resource> PipeParamState for DynWriterState<T> {
     {
         let id = builder.command().pipeline_id;
         Ok(DynWriterState::clone(
-            builder.world().get::<DynWriterState<T>>(id).unwrap(),
+            builder.world().await.get::<DynWriterState<T>>(id).unwrap(),
         ))
     }
 }
@@ -204,25 +232,44 @@ impl<'a, T> DynWriter<'a, T> {
 }
 
 #[async_trait]
-impl<'a, T> TopicWriter<T> for AsyncMutexGuard<'a, Box<dyn WriterState<T>>> {
-    fn write(mut self, value: T) {
-        unsafe { self.deref_mut().write(value) }
+impl<'a, T> WriterState<T> for AsyncMutexGuard<'a, Box<dyn WriterState<T>>> {
+    unsafe fn extend_from_slice(&mut self, data: &[T])
+    where
+        T: Clone,
+    {
+        self.deref_mut().extend_from_slice(data)
+    }
+
+    unsafe fn extend_one(&mut self, value: T) {
+        self.deref_mut().extend_one(value)
+    }
+
+    unsafe fn extend<I>(&mut self, iter: I)
+    where
+        Self: Sized,
+        I: IntoIterator<Item = T>,
+    {
+        let mut iter = iter.into_iter();
+        self.deref_mut().extend_dyn(&mut iter);
+    }
+
+    unsafe fn extend_dyn(&mut self, iter: &mut dyn Iterator<Item = T>) {
+        self.deref_mut().extend_dyn(iter);
     }
 }
 
 pub enum GuardedEvents<'a, T> {
-    Guard(SpinRwLockReadGuard<'a, Vec<T>>),
+    Guard(SpinRwLockReadGuard<'a, Vec<T>>, Range<usize>),
     Slice(&'a [T]),
 }
 
 pub struct ReadGuard<'a, T> {
     guard: GuardedEvents<'a, T>,
-    range: Range<usize>,
 }
 
 impl<'a, T> ReadGuard<'a, T> {
-    pub fn new(guard: GuardedEvents<'a, T>, range: Range<usize>) -> Self {
-        Self { guard, range }
+    pub fn new(guard: GuardedEvents<'a, T>) -> Self {
+        Self { guard }
     }
 }
 
@@ -231,8 +278,8 @@ impl<'a, T> Deref for ReadGuard<'a, T> {
 
     fn deref(&self) -> &Self::Target {
         match &self.guard {
-            GuardedEvents::Guard(x) => &x[self.range.clone()],
-            GuardedEvents::Slice(x) => &x[self.range.clone()],
+            GuardedEvents::Guard(guard, range) => &guard[range.clone()],
+            GuardedEvents::Slice(slice) => slice,
         }
     }
 }

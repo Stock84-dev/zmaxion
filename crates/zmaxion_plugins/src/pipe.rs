@@ -1,26 +1,35 @@
-use zmaxion_app::{
-    prelude::*,
-    resources::{Reschedule, WorldArc},
-};
+use std::sync::atomic::AtomicBool;
+
+use bevy_hierarchy::BuildChildren;
+use zmaxion_app::prelude::*;
 use zmaxion_core::{
-    error::{Errors, PipeSpawnError, SpawnError},
-    pipe::{
-        components::{PipeComponent, PipeTask, SpawnPipeComponent, SystemData},
-        factory::PipeFactoryArgs,
-        messages::{AddSystem, DespawnPipe, LoadPipeState, PipeSpawned, PipeSpawning, SpawnPipe},
-        resources::{PipeDefs, PipeNameToEntity},
+    components::{PipeInitializing, ShouldDespawn, TopicState},
+    messages::{
+        AddSystem, DespawnPipe, DespawnTopic, LoadPipeState, PipeSpawned, PipeSpawning, SpawnPipe,
     },
     prelude::*,
+    read_all,
+    resources::{PipeNameToEntity, Reschedule, Topics, WorldArc},
     smallvec::SmallVec,
-    topic::{components::TopicState, messages::DespawnTopic, resources::Topics},
 };
+use zmaxion_param::{prelude::Errors, PipeFactoryArgs};
+use zmaxion_pipe::{
+    components::{PipeTask, SystemData},
+    resources::PipeDefinitions,
+    Pipe,
+};
+use zmaxion_rt::SpawnFutureExt;
+use zmaxion_topic::prelude::*;
+use zmaxion_utils::prelude::*;
+
+use crate::error::{PipeSpawnError, SpawnError};
 
 pub struct PipePlugin;
 
 impl Plugin for PipePlugin {
     fn build<'a, 'b>(self: Box<Self>, builder: &'b mut AppBuilder<'a>) -> &'b mut AppBuilder<'a> {
         builder
-            .insert_resource(PipeDefs(Default::default()))
+            .insert_resource(PipeDefinitions(Default::default()))
             .insert_resource(PipeNameToEntity(Default::default()))
             .add_system_topic::<SpawnPipe>()
             .add_system_topic::<AddSystem>()
@@ -34,79 +43,29 @@ impl Plugin for PipePlugin {
     }
 }
 
-fn start_loading_pipe_state(
-    spawn_pipe: ResTopicReader<SpawnPipe>,
-    load_pipe_state: ResTopicWriter<LoadPipeState>,
-) {
-    //    load_pipe_state.write_all(some!(spawn_pipe.try_read()).iter().map(|x| LoadPipeState {
-    //        state_generation: x.0.state_generation,
-    //        state_name: format!("{}:{}", x.0.pipeline.id, x.0.config.name),
-    //        inner: x.0.clone(),
-    //    }));
-}
-
-fn poll_spawn_pipe(
-    mut query: Query<(&mut PipeTask, &SpawnPipeComponent, Entity)>,
-    spawning: ResTopicWriter<PipeSpawning>,
-    mut map: ResMut<PipeNameToEntity>,
-    mut commands: Commands,
-    despawn: ResTopicWriter<DespawnPipe>,
-    errors: Errors,
-) {
-    for (mut task, e, id) in query.iter_mut() {
-        let e: &SpawnPipeComponent = e;
-        let result = some_loop!(task.0.poll());
-        commands.entity(id).remove::<PipeTask>();
-        let factory = match errors.handle(
-            result
-                .map_err(|x| PipeSpawnError::PipeConstructionFailed {
-                    source: x,
-                    pipe_name: e.0.config.name.clone(),
-                    pipeline: e.0.pipeline.name.clone(),
-                })
-                .map_err(|x| SpawnError::Pipe {
-                    source: x.into(),
-                    info: e.0.config.clone(),
-                }),
-        ) {
-            None => {
-                despawn.write(DespawnPipe { entity: id });
-                continue;
-            }
-            Some(factory) => factory,
-        };
-        commands.entity(id).insert(PipeComponent { factory });
-
-        map.0.insert(e.0.config.name.clone(), id);
-        spawning.write(PipeSpawning(e.0.clone()));
-        commands.entity(e.0.pipeline_id).push_children(&[id]);
-    }
-}
-
 fn spawn_pipe(
     mut topic_states: Query<&mut TopicState>,
-    spawn_pipe: ResTopicReader<SpawnPipe>,
-    defs: Res<PipeDefs>,
+    spawn_pipe: GlobalSystemReader<SpawnPipe>,
+    mut defs: ResMut<PipeDefinitions>,
     map: Res<Topics>,
     world: Res<WorldArc>,
     mut commands: Commands,
     errors: Errors,
 ) {
-    for e in read_all!(spawn_pipe) {
+    for e in &spawn_pipe {
         let mut reader_topics: SmallVec<[Entity; 4]> = Default::default();
         let mut writer_topics: SmallVec<[Entity; 4]> = Default::default();
         let pipe_name = e.0.config.name.as_str();
         let result = defs
             .0
-            .get(pipe_name)
-            .some()
-            .map_err(|_| PipeSpawnError::UnregisteredPipe(pipe_name.to_string()))
+            .get_mut(pipe_name)
+            .ok_or_else(|| PipeSpawnError::UnregisteredPipe(pipe_name.to_string()))
             .map_err(|x| SpawnError::Pipe {
                 source: x.into(),
                 info: e.0.config.clone(),
             });
 
-        let factory = some_loop!(errors.handle(result)).factory.dyn_clone();
+        let mut def = some_loop!(errors.handle(result));
         let mut i = 0;
         debug!("{:#?}", pipe_name);
         let mut mapper = |_| {
@@ -129,19 +88,22 @@ fn spawn_pipe(
         }
         debug!("{:#?}", reader_topics);
         debug!("{:#?}", writer_topics);
-        let task = factory
-            .dyn_clone()
-            .new_pipe(PipeFactoryArgs {
+        let should_despawn = ShouldDespawn(Arc::new(AtomicBool::new(false)));
+        let task = def
+            .factory
+            .new(PipeFactoryArgs {
                 world: world.0.clone(),
                 config: e.0.clone(),
+                should_despawn: should_despawn.0.clone(),
                 reader_topics: reader_topics.clone(),
                 writer_topics: writer_topics.clone(),
             })
             .spawn();
         commands
-            .entity(e.0.pipe)
+            .entity(e.0.pipe_id)
+            .insert(should_despawn)
             .insert(PipeTask(task))
-            .insert(SpawnPipeComponent(e.0.clone()))
+            .insert(PipeInitializing(e.0.clone()))
             .insert(Name(e.0.config.name.clone()))
             .insert(SystemData {
                 reader_topics,
@@ -150,27 +112,67 @@ fn spawn_pipe(
     }
 }
 
-fn pipe_spawning(
-    add: ResTopicWriter<AddSystem>,
-    spawned: ResTopicWriter<PipeSpawned>,
-    spawning: ResTopicReader<PipeSpawning>,
+fn poll_spawn_pipe(
+    mut query: Query<(&mut PipeTask, &PipeInitializing, Entity)>,
+    mut spawning: GlobalSystemWriter<PipeSpawning>,
+    mut map: ResMut<PipeNameToEntity>,
+    mut commands: Commands,
+    mut despawn: GlobalSystemWriter<DespawnPipe>,
+    errors: Errors,
 ) {
-    for e in read_all!(spawning) {
+    for (mut task, e, id) in query.iter_mut() {
+        let e: &PipeInitializing = e;
+        let result = some_loop!(task.0.poll());
+        commands.entity(id).remove::<PipeTask>();
+        let adder = match errors.handle(
+            result
+                .map_err(|x| PipeSpawnError::PipeConstructionFailed {
+                    source: x,
+                    pipe_name: e.0.config.name.clone(),
+                    pipeline: e.0.pipeline.name.clone(),
+                })
+                .map_err(|x| SpawnError::Pipe {
+                    source: x.into(),
+                    info: e.0.config.clone(),
+                }),
+        ) {
+            None => {
+                despawn.write(DespawnPipe { entity: id });
+                continue;
+            }
+            Some(adder) => adder,
+        };
+        commands.entity(id).insert(Pipe { adder });
+
+        map.0.insert(e.0.config.name.clone(), id);
+        spawning.write(PipeSpawning(e.0.clone()));
+        commands.entity(e.0.pipeline_id).push_children(&[id]);
+    }
+}
+
+fn pipe_spawning(
+    mut add: GlobalSystemWriter<AddSystem>,
+    mut spawned: GlobalSystemWriter<PipeSpawned>,
+    spawning: GlobalSystemReader<PipeSpawning>,
+) {
+    for e in &spawning {
         debug!("{:#?}", e.0.config.name);
-        add.write(AddSystem { entity: e.0.pipe });
+        add.write(AddSystem {
+            entity: e.0.pipe_id,
+        });
         spawned.write(PipeSpawned(e.0.clone()))
     }
 }
 
 fn despawn_pipe(
-    despawn_system: ResTopicReader<DespawnPipe>,
+    despawn_system: GlobalSystemReader<DespawnPipe>,
     mut map: ResMut<PipeNameToEntity>,
     query: Query<(&SystemData, &Name)>,
     mut states: Query<&mut TopicState>,
-    writer: ResTopicWriter<DespawnTopic>,
+    mut writer: GlobalSystemWriter<DespawnTopic>,
     mut commands: Commands,
 ) {
-    for e in read_all!(despawn_system) {
+    for e in &despawn_system {
         let (system, name) = query.get(e.entity).unwrap();
         commands.entity(e.entity).despawn();
         map.0.remove(&name.0);

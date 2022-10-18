@@ -4,6 +4,10 @@ use std::{
 };
 
 use bevy_ecs::{prelude::*, system::EntityCommands};
+use enum_ordinalize::Ordinalize;
+use smallvec::SmallVec;
+use zmaxion_rt::pipe_runtimes::{PipeRuntimeKind, RuntimeMarker};
+use zmaxion_utils::pool::{PoolArc, PoolItem};
 
 use crate::{
     models::config::{PipeConfig, TopicConfig},
@@ -164,7 +168,7 @@ pub struct SpawnPipelineInner {
 #[derive(Debug)]
 pub struct SpawnPipeInner {
     pub pipeline_id: Entity,
-    pub pipe: Entity,
+    pub pipe_id: Entity,
     pub config: Arc<PipeConfig>,
     pub pipeline: Arc<SpawnPipelineInner>,
     pub topic_ids: Arc<Vec<Vec<TopicId<'static>>>>,
@@ -195,8 +199,54 @@ pub type SchemaTypeName = String;
 pub struct TopicSpawnerArgs<'w, 's, 'a> {
     pub commands: EntityCommands<'w, 's, 'a>,
     pub is_reader: bool,
+    pub handlers: &'a HashSet<TopicHandler>,
 }
 
-pub struct TopicDefinition {
-    pub spawner: fn(&mut TopicSpawnerArgs),
+pub struct TopicFactory {
+    pub factory: fn(&mut TopicSpawnerArgs),
+}
+
+#[derive(PartialEq, Eq, Hash, Ordinalize)]
+pub enum TopicHandler {
+    System,
+    Async,
+}
+
+#[non_exhaustive]
+#[derive(Default, Clone)]
+pub struct PipeFeatures<RuntimeMarker> {
+    pub runtime: RuntimeMarker,
+}
+
+#[non_exhaustive]
+#[derive(Default)]
+pub struct DynPipeFeatures {
+    pub runtime_kind: PipeRuntimeKind,
+}
+
+impl DynPipeFeatures {
+    pub fn new<T: RuntimeMarker>(features: PipeFeatures<T>) -> Self {
+        Self {
+            runtime_kind: T::RUNTIME_KIND,
+        }
+    }
+}
+
+impl<T: RuntimeMarker> From<PipeFeatures<T>> for DynPipeFeatures {
+    fn from(features: PipeFeatures<T>) -> Self {
+        Self::new(features)
+    }
+}
+
+pub struct PipelineFeatures;
+
+#[derive(Default, Clone)]
+pub struct PipeDeclaration<RuntimeMarker> {
+    pub param_names: Vec<String>,
+    pub features: PipeFeatures<RuntimeMarker>,
+}
+
+pub struct DynPipeDeclaration {
+    pub param_names: Vec<String>,
+    pub features: DynPipeFeatures,
 }

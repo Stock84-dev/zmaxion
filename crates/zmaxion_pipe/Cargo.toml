@@ -13,7 +13,10 @@ categories = ["data-structures"]
 [dependencies]
 zmaxion_param = { path = "../zmaxion_param", version = "0.1.0" }
 zmaxion_utils = { path = "../zmaxion_utils", version = "0.1.0" }
+zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }
+ergnomics = { path = "../ergnomics" }
 zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
-paste = "1.0.5"
 bevy_ecs = { version = "0.7.0", default-features = false }
+bevy_utils = { version = "0.7.0", default-features = false }
+paste = "1.0.5"
 futures-util = "0.3.21"

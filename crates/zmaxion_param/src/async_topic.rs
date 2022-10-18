@@ -1,6 +1,5 @@
-// 324
 use std::{
-    ops::Range,
+    ops::{Deref, Range},
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc,
@@ -8,24 +7,56 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bevy_ecs::system::SystemParam;
 use cache_padded::CachePadded;
+use ergnomics::prelude::*;
 use zmaxion_core::{
     bevy_ecs::{
         archetype::Archetype,
         system::{Resource, SystemMeta, SystemParamFetch, SystemParamState},
     },
-    components::Arcc,
     prelude::*,
 };
 use zmaxion_rt::prelude::*;
 use zmaxion_utils::prelude::*;
 
 use crate::{
-    prelude::*, ParamBuilder, PipeObserver, PipeParam, PipeParamFetch, PipeParamImpl,
-    PipeParamState, PipeParamStateImpl, TopicParamKind,
+    prelude::*, IntoParamStateMut, ParamBuilder, PipeObserver, PipeParam, PipeParamFetch,
+    PipeParamImpl, PipeParamState, PipeParamStateImpl, TopicParamKind,
 };
 
-pub struct AsyncTopic<T> {
+#[derive(Component)]
+pub struct AsyncTopic<T>(Arc<AsyncTopicInner<T>>);
+
+impl<T: Resource> AsyncTopic<T> {
+    pub fn update_system(query: Query<&AsyncTopic<T>>) {
+        for q in query.iter() {
+            q.update();
+        }
+    }
+}
+
+impl<T> Clone for AsyncTopic<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> Deref for AsyncTopic<T> {
+    type Target = AsyncTopicInner<T>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
+    }
+}
+
+impl<T: Resource> Default for AsyncTopic<T> {
+    fn default() -> Self {
+        Self(Arc::default())
+    }
+}
+
+pub struct AsyncTopicInner<T> {
     /// cumulative number of all events processed + number of events in read buffer
     n_total_readable_events: AtomicU64,
     notify: Notify,
@@ -34,9 +65,9 @@ pub struct AsyncTopic<T> {
     reader_cursors: SpinRwLock<Vec<CachePadded<Option<AtomicU64>>>>,
 }
 
-impl<T: Resource> Default for AsyncTopic<T> {
+impl<T: Resource> Default for AsyncTopicInner<T> {
     fn default() -> Self {
-        AsyncTopic {
+        AsyncTopicInner {
             n_total_readable_events: Default::default(),
             notify: Default::default(),
             write_events: Default::default(),
@@ -46,7 +77,7 @@ impl<T: Resource> Default for AsyncTopic<T> {
     }
 }
 
-impl<T: Resource> AsyncTopic<T> {
+impl<T: Resource> AsyncTopicInner<T> {
     pub fn new() -> Self {
         Self::default()
     }
@@ -85,9 +116,9 @@ impl<T: Resource> AsyncTopic<T> {
         self.reader_cursors
             .read()
             .get(reader_id)
-            .unwrap()
+            .expect_with(|| format!("Reader `{}` not subscribed", reader_id))
             .as_ref()
-            .unwrap()
+            .expect_with(|| format!("Reader `{}` not subscirbed", reader_id))
             .fetch_add(guard.len() as u64, Ordering::SeqCst);
         //        debug!("{:#?}", self.topic.reader_cursors);
         //        debug!("{:#?}", self.reader_cursor);
@@ -139,27 +170,21 @@ impl<T: Resource> AsyncTopic<T> {
             guard[reader_id] = CachePadded::new(None);
         }
     }
-
-    pub fn update_system(query: Query<&Arcc<AsyncTopic<T>>>) {
-        for q in query.iter() {
-            q.update();
-        }
-    }
 }
 
-#[derive(Deref, DerefMut)]
-pub struct AsyncTopicReader<'a, T: Resource>(&'a mut AsyncTopicReaderState<T>);
+#[derive(new)]
+pub struct AsyncReader<'a, T: Resource>(&'a mut AsyncReaderState<T>);
 
-impl<T: Resource> AsyncTopicReaderState<T> {
-    pub async fn read_raw<'a>(&'a mut self) -> (SpinRwLockReadGuard<'a, Vec<T>>, Range<usize>) {
+impl<T: Resource> AsyncReaderState<T> {
+    pub async fn read_raw<'a>(&'a self) -> (SpinRwLockReadGuard<'a, Vec<T>>, Range<usize>) {
         let reader_cursor;
         {
             let guard = self.topic.reader_cursors.read();
             reader_cursor = guard
                 .get(self.reader_id)
-                .unwrap()
+                .expect_with(|| format!("Reader `{}` not subscribed", self.reader_id))
                 .as_ref()
-                .unwrap()
+                .expect_with(|| format!("Reader `{}` not subscribed", self.reader_id))
                 .load(Ordering::SeqCst);
         }
         if reader_cursor == self.topic.n_total_readable_events.load(Ordering::SeqCst) {
@@ -171,15 +196,15 @@ impl<T: Resource> AsyncTopicReaderState<T> {
         (guard, range)
     }
 
-    pub fn try_read_raw<'a>(&'a mut self) -> (SpinRwLockReadGuard<'a, Vec<T>>, Range<usize>) {
+    pub fn try_read_raw<'a>(&'a self) -> (SpinRwLockReadGuard<'a, Vec<T>>, Range<usize>) {
         let reader_cursor;
         {
             let guard = self.topic.reader_cursors.read();
             reader_cursor = guard
                 .get(self.reader_id)
-                .unwrap()
+                .expect_with(|| format!("Reader `{}` not subscribed", self.reader_id))
                 .as_ref()
-                .unwrap()
+                .expect_with(|| format!("Reader `{}` not subscribed", self.reader_id))
                 .load(Ordering::SeqCst);
         }
         let guard = self.topic.read_events.read();
@@ -192,13 +217,13 @@ impl<T: Resource> AsyncTopicReaderState<T> {
 }
 
 #[derive(Component)]
-pub struct AsyncTopicReaderState<T: Resource> {
-    topic: Arc<AsyncTopic<T>>,
+pub struct AsyncReaderState<T: Resource> {
+    topic: AsyncTopic<T>,
     n_writer_references: Arc<()>,
     reader_id: usize,
 }
 
-impl<T: Resource> Drop for AsyncTopicReaderState<T> {
+impl<T: Resource> Drop for AsyncReaderState<T> {
     fn drop(&mut self) {
         if Arc::strong_count(&self.n_writer_references) == 1 {
             self.topic.despawn_reader(self.reader_id);
@@ -206,36 +231,40 @@ impl<T: Resource> Drop for AsyncTopicReaderState<T> {
     }
 }
 
-pub struct AsyncTopicWriter<'a, T: Resource>(&'a mut AsyncTopicWriterState<T>);
+pub struct AsyncWriter<'a, T: Resource>(&'a mut AsyncWriterState<T>);
 
 #[derive(Component)]
-pub struct AsyncTopicWriterState<T: Resource> {
-    topic: Arc<AsyncTopic<T>>,
+pub struct AsyncWriterState<T: Resource> {
+    topic: AsyncTopic<T>,
 }
 
-impl<T: Resource> AsyncTopicWriterState<T> {
-    pub fn write_slice_raw(&self, data: &[T])
+impl<T: Resource> AsyncWriterState<T> {
+    pub unsafe fn extend_from_slice(&self, data: &[T])
     where
         T: Clone,
     {
-        self.topic.write_events.lock().extend_from_slice(data)
+        self.topic.write_events.lock().extend_from_slice(data);
     }
 
-    pub fn write_raw(&self, value: T) {
+    pub unsafe fn extend_one(&self, value: T) {
         self.topic.write_events.lock().push(value);
     }
 
-    pub fn topic(&self) -> &Arc<AsyncTopic<T>> {
+    pub unsafe fn extend<I: IntoIterator<Item = T>>(&self, iter: I) {
+        self.topic.write_events.lock().extend(iter);
+    }
+
+    pub fn topic(&self) -> &AsyncTopic<T> {
         &self.topic
     }
 }
 
-impl<'a, T: Resource> PipeParam for AsyncTopicReader<'a, T> {
-    type State = AsyncTopicReaderState<T>;
+impl<'a, T: Resource> PipeParam for AsyncReader<'a, T> {
+    type State = AsyncReaderState<T>;
 }
 
 #[async_trait]
-impl<T: Resource> PipeParamState for AsyncTopicReaderState<T> {
+impl<T: Resource> PipeParamState for AsyncReaderState<T> {
     type Args = ();
 
     const KIND: TopicParamKind = TopicParamKind::Reader;
@@ -245,14 +274,14 @@ impl<T: Resource> PipeParamState for AsyncTopicReaderState<T> {
         Self: Sized,
     {
         let id = builder.get_topic_id(Self::type_name())?;
-        let world = builder.world();
-        let topic = world.get::<Arcc<AsyncTopic<T>>>(id).unwrap();
-        Ok(Self::from(Arc::clone(&*topic)))
+        let world = builder.world().await;
+        let topic = world.try_ref::<AsyncTopic<T>>(id)?;
+        Ok(Self::from(topic.clone()))
     }
 }
 
-impl<T: Resource> From<Arc<AsyncTopic<T>>> for AsyncTopicReaderState<T> {
-    fn from(topic: Arc<AsyncTopic<T>>) -> Self {
+impl<T: Resource> From<AsyncTopic<T>> for AsyncReaderState<T> {
+    fn from(topic: AsyncTopic<T>) -> Self {
         let reader_id = topic.new_reader();
         Self {
             reader_id,
@@ -262,26 +291,41 @@ impl<T: Resource> From<Arc<AsyncTopic<T>>> for AsyncTopicReaderState<T> {
     }
 }
 
-impl<T: Resource> From<Arc<AsyncTopic<T>>> for AsyncTopicWriterState<T> {
-    fn from(topic: Arc<AsyncTopic<T>>) -> Self {
+impl<T: Resource> PipeObserver for AsyncReaderState<T> {
+}
+
+impl<'s, T: Resource> IntoParamStateMut<'s> for AsyncReader<'s, T> {
+    fn into_state_mut(self) -> &'s mut Self::State {
+        self.0
+    }
+}
+
+impl<'s, T: Resource> IntoParamStateMut<'s> for AsyncWriter<'s, T> {
+    fn into_state_mut(self) -> &'s mut Self::State {
+        self.0
+    }
+}
+
+impl<T: Resource> From<AsyncTopic<T>> for AsyncWriterState<T> {
+    fn from(topic: AsyncTopic<T>) -> Self {
         Self { topic }
     }
 }
 
-impl<'s, T: Resource> PipeParamFetch<'s> for AsyncTopicReaderState<T> {
-    type Item = AsyncTopicReader<'s, T>;
+impl<'s, T: Resource> PipeParamFetch<'s> for AsyncReaderState<T> {
+    type Item = AsyncReader<'s, T>;
 
     fn get_param(&'s mut self) -> Self::Item {
-        AsyncTopicReader(self)
+        AsyncReader(self)
     }
 }
 
-impl<'a, T: Resource> PipeParam for AsyncTopicWriter<'a, T> {
-    type State = AsyncTopicWriterState<T>;
+impl<'a, T: Resource> PipeParam for AsyncWriter<'a, T> {
+    type State = AsyncWriterState<T>;
 }
 
 #[async_trait]
-impl<T: Resource> PipeParamState for AsyncTopicWriterState<T> {
+impl<T: Resource> PipeParamState for AsyncWriterState<T> {
     type Args = ();
 
     const KIND: TopicParamKind = TopicParamKind::Writer;
@@ -291,16 +335,19 @@ impl<T: Resource> PipeParamState for AsyncTopicWriterState<T> {
         Self: Sized,
     {
         let id = builder.get_topic_id(Self::type_name())?;
-        let world = builder.world();
-        let topic = world.get::<Arcc<AsyncTopic<T>>>(id).unwrap();
-        Ok(Self::from(Arc::clone(&*topic)))
+        let world = builder.world().await;
+        let topic = world.try_ref::<AsyncTopic<T>>(id)?;
+        Ok(Self::from(topic.clone()))
     }
 }
 
-impl<'s, T: Resource> PipeParamFetch<'s> for AsyncTopicWriterState<T> {
-    type Item = AsyncTopicWriter<'s, T>;
+impl<'s, T: Resource> PipeParamFetch<'s> for AsyncWriterState<T> {
+    type Item = AsyncWriter<'s, T>;
 
     fn get_param(&'s mut self) -> Self::Item {
-        AsyncTopicWriter(self)
+        AsyncWriter(self)
     }
+}
+
+impl<T: Resource> PipeObserver for AsyncWriterState<T> {
 }

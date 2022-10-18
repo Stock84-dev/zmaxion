@@ -1,0 +1,20 @@
+[package]
+name = "zmaxion_topics"
+version = "0.1.0"
+edition = "2021"
+description = "Injects a topic from user defined crates into one enum"
+repository = "https://github.com/Stock84-dev/zmaxion"
+license = "MIT OR Apache-2.0"
+keywords = ["zmaxion", "bevy", "crate", "inject"]
+
+[dependencies]
+zmaxion_rt = { path = "../zmaxion_rt", version = "0.1.0" }
+zmaxion_core = { path = "../zmaxion_core", version = "0.1.0" }
+bevy_ecs = { version = "0.7.0", default-features = false }
+enum_dispatch = "0.3.8"
+dummy = { path = "/home/stock/ssd/projects/zmaxion/./crates/dummy/" }
+
+
+[build-dependencies]
+toml_edit = "0.14.4"
+ident_case = "1.0.1"

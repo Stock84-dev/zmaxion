@@ -31,7 +31,10 @@ pub mod pipe {
 }
 
 pub mod prelude {
+    pub use zmaxion_derive::*;
+
     pub use crate::{
-        app::prelude::*, core::prelude::*, plugins::prelude::*, rt::prelude::*, utils::prelude::*,
+        app::prelude::*, core::prelude::*, param::prelude::*, pipe::prelude::*,
+        plugins::prelude::*, rt::prelude::*, topic::prelude::*, utils::prelude::*,
     };
 }

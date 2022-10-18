@@ -1,6 +1,9 @@
 #![allow(non_snake_case)]
 
-use std::{io::Read, sync::Arc};
+use std::{
+    io::Read,
+    sync::{atomic::AtomicBool, Arc},
+};
 
 use async_trait::async_trait;
 use bevy_ecs::{
@@ -17,6 +20,9 @@ use zmaxion_utils::prelude::*;
 mod async_topic;
 mod params_impl;
 pub use async_topic::*;
+use errors::PipeParamError;
+use zmaxion_core::models::{DynPipeDeclaration, PipeDeclaration};
+use zmaxion_rt::{AsyncMutex, AsyncMutexGuard, ControlFlow};
 
 mod errors;
 
@@ -34,14 +40,6 @@ pub mod __async_trait__ {
     pub use async_trait::async_trait;
 }
 
-#[derive(Error, Debug)]
-#[error("{0:}")]
-pub enum PipeParamError {
-    #[error("Invalid pipe parameter at position {0:} (zero-indexed), expected `{1:}`.")]
-    InvalidPipeParam(usize, String),
-    Other(#[from] AnyError),
-}
-
 #[derive(Clone, Copy, Debug)]
 pub enum TopicParam {
     Reader(Entity),
@@ -56,13 +54,15 @@ pub enum TopicParamKind {
 }
 
 pub struct PipeFactoryArgs {
-    pub world: Arc<PrioMutex<World>>,
+    pub world: Arc<AsyncMutex<World>>,
     pub config: Arc<SpawnPipeInner>,
+    pub should_despawn: Arc<AtomicBool>,
     pub reader_topics: SmallVec<[Entity; 4]>,
     pub writer_topics: SmallVec<[Entity; 4]>,
 }
+
 impl PipeFactoryArgs {
-    pub fn to_param_builder<Args: DeserializeOwned, R: Read>(
+    pub fn to_param_builder<Args: DeserializeOwned + Send + Sync, R: Read>(
         &self,
         arg_i: usize,
         topic: Option<TopicParam>,
@@ -73,8 +73,8 @@ impl PipeFactoryArgs {
     }
 }
 
-pub struct ParamBuilder<Args> {
-    world: Arc<PrioMutex<World>>,
+pub struct ParamBuilder<Args: Send + Sync> {
+    world: Arc<AsyncMutex<World>>,
     //    state: Arc<PipelineState>,
     state: Option<(u64, Vec<u8>)>,
     pipe_id: Entity,
@@ -85,7 +85,7 @@ pub struct ParamBuilder<Args> {
     defined_param_kind: TopicParamKind,
 }
 
-impl<Args: DeserializeOwned> ParamBuilder<Args> {
+impl<Args: DeserializeOwned + Send + Sync> ParamBuilder<Args> {
     pub fn new<R: Read>(
         factory_args: &PipeFactoryArgs,
         arg_i: usize,
@@ -97,7 +97,7 @@ impl<Args: DeserializeOwned> ParamBuilder<Args> {
         ParamBuilder {
             world: factory_args.world.clone(),
             state: None,
-            pipe_id: factory_args.config.pipe,
+            pipe_id: factory_args.config.pipe_id,
             topic,
             command: factory_args.config.clone(),
             arg_i,
@@ -107,9 +107,9 @@ impl<Args: DeserializeOwned> ParamBuilder<Args> {
     }
 }
 
-impl<Args: DeserializeOwned> ParamBuilder<Args> {
-    pub fn world<'a>(&'a self) -> PrioMutexGuard<'a, World> {
-        self.world.lock(0).unwrap()
+impl<Args: DeserializeOwned + Send + Sync> ParamBuilder<Args> {
+    pub async fn world<'a>(&'a self) -> AsyncMutexGuard<'a, World> {
+        self.world.lock().await
     }
 
     pub fn entity(&self) -> Entity {
@@ -173,12 +173,13 @@ impl<Args: DeserializeOwned> ParamBuilder<Args> {
 
 #[async_trait]
 pub trait PipeParamState {
-    type Args: DeserializeOwned + Send;
+    type Args: DeserializeOwned + Send + Sync;
     /// Type of arguments to use when using a constructor
     const KIND: TopicParamKind;
     async fn new(builder: ParamBuilder<Self::Args>) -> AnyResult<Self>
     where
-        Self: Sized;
+        Self: Sized,
+        <Self as PipeParamState>::Args: Sync;
     fn topic_param(&self) -> Option<TopicParam> {
         match Self::KIND {
             TopicParamKind::None => None,
@@ -224,7 +225,7 @@ impl PipeParamState for () {
 #[async_trait]
 pub trait PipeParamStateImpl<'s>: Sized + 'static {
     type Source: Component + Clone;
-    type Args: DeserializeOwned + Send + 'static;
+    type Args: DeserializeOwned + Send + Sync + 'static;
     type Param: PipeParam<State = Self>;
     const KIND: TopicParamKind;
 
@@ -232,7 +233,7 @@ pub trait PipeParamStateImpl<'s>: Sized + 'static {
 
     async fn new(builder: ParamBuilder<Self::Args>) -> AnyResult<Self> {
         let id = builder.get_topic_id(Self::type_name())?;
-        let world = builder.world();
+        let world = builder.world().await;
         let topic = world.get::<Self::Source>(id).unwrap();
         Self::new_rw(topic.clone())
     }
@@ -253,7 +254,8 @@ pub trait PipeParamStateImpl<'s>: Sized + 'static {
     fn get_param(&'s mut self) -> Self::Param;
 
     /// Called before the pipe gets executed
-    fn pipe_executing(&mut self) {
+    fn pipe_executing(&mut self) -> ControlFlow {
+        ControlFlow::default()
     }
     /// Called after the pipe has executed
     fn pipe_executed<T>(&mut self, result: &AnyResult<T>) -> ControlFlow {
@@ -263,7 +265,8 @@ pub trait PipeParamStateImpl<'s>: Sized + 'static {
 
 pub trait PipeObserver {
     /// Called before the pipe gets executed
-    fn pipe_executing(&mut self) {
+    fn pipe_executing(&mut self) -> ControlFlow {
+        ControlFlow::default()
     }
     /// Called after the pipe has executed
     fn pipe_executed<T>(&mut self, result: &AnyResult<T>) -> ControlFlow {
@@ -271,12 +274,18 @@ pub trait PipeObserver {
     }
 }
 
-bitflags::bitflags! {
-    #[derive(Default)]
-    pub struct ControlFlow: u32 {
-    }
+pub trait IntoParamStateMut<'s>: PipeParam {
+    fn into_state_mut(self) -> &'s mut Self::State;
 }
 
 pub trait PipeParamImpl {
     type State: PipeParamState + for<'s> PipeParamFetch<'s> + PipeObserver;
+}
+
+#[async_trait]
+pub trait BuildableParams: PipeParam {
+    async fn build(
+        args: PipeFactoryArgs,
+        pipe_declaration: Arc<DynPipeDeclaration>,
+    ) -> Result<Self::State, PipeParamError>;
 }

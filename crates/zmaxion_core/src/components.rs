@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::sync::{atomic::AtomicBool, Arc};
 
 use crate::{
-    models::{PipelineStateInner, TopicId},
+    models::{PipelineStateInner, SpawnPipeInner, TopicId},
     prelude::*,
 };
 
@@ -9,19 +9,8 @@ use crate::{
 pub struct Name(pub String);
 #[derive(Component)]
 pub struct Generation(pub u64);
-//#[derive(Component)]
-// pub struct PipeTask(pub Task<AnyResult<Box<dyn Pipe>>>);
-//#[derive(Component)]
-// pub struct PipeComponent {
-//    pub factory: Box<dyn Pipe>,
-//}
-//#[derive(Component)]
-// pub struct SystemData {
-//    pub reader_topics: SmallVec<[Entity; 4]>,
-//    pub writer_topics: SmallVec<[Entity; 4]>,
-//}
-//#[derive(Component)]
-// pub struct SpawnPipeComponent(pub Arc<SpawnPipeInner>);
+#[derive(Component)]
+pub struct PipeInitializing(pub Arc<SpawnPipeInner>);
 #[derive(Component)]
 pub struct IsReader;
 #[derive(Component)]
@@ -31,6 +20,8 @@ pub struct TopicState {
     pub id: TopicId<'static>,
     pub n_references: usize,
 }
+#[derive(Component)]
+pub struct ShouldDespawn(pub Arc<AtomicBool>);
 #[derive(Component)]
 pub struct Pipeline;
 /// An index of a pipe in [`SpawnPipelineInner`].pipes.

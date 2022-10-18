@@ -1,9 +1,11 @@
-use std::{future::Future, pin::Pin};
+use std::{future::Future, marker::PhantomData, pin::Pin};
 
 use bevy_ecs::{all_tuples, system::SystemParamState};
+use futures_util::{future::Map, FutureExt};
 use paste::paste;
+use zmaxion_core::models::DynPipeDeclaration;
 
-use crate::{PipeParamState, PipeParamStateImpl, *};
+use crate::{errors::PipeParamError, PipeParamState, PipeParamStateImpl, *};
 macro_rules! impl_pipe_param (
     ($($param: ident),*) => {
         impl<$($param: PipeParam,)*> PipeParam for ($($param,)*) {
@@ -32,9 +34,13 @@ all_tuples!(impl_pipe_param_fetch, 0, 16, F);
 macro_rules! impl_pipe_observer (
     ($($param: ident),*) => {
         impl<$($param: PipeObserver,)*> PipeObserver for ($($param,)*) {
-            fn pipe_executing(&mut self) {
+            fn pipe_executing(&mut self) -> ControlFlow {
+                let mut flow = ControlFlow::default();
                 let ($($param,)*) = self;
-                $($param.pipe_executing();)*
+                $(
+                    flow |= $param.pipe_executing();
+                )*
+                flow
             }
             fn pipe_executed<T>(&mut self, result: &AnyResult<T>) -> ControlFlow {
                 let mut flow = ControlFlow::default();
@@ -50,7 +56,8 @@ macro_rules! impl_pipe_observer (
 
 all_tuples!(impl_pipe_observer, 0, 16, F);
 
-fn build_param<P: PipeParam>(
+fn build_param<'a, P: PipeParam>(
+    pipe_declaration: &'a DynPipeDeclaration,
     defined_kind: TopicParamKind,
     args: &PipeFactoryArgs,
     pipe_args: &mut &[u8],
@@ -58,10 +65,11 @@ fn build_param<P: PipeParam>(
     writer_i: &mut usize,
     reader_i: &mut usize,
     type_name: &'static str,
-) -> AnyResult<Pin<Box<dyn Future<Output = AnyResult<P::State>> + Send>>>
+) -> Result<impl Future<Output = Result<P::State, PipeParamError>> + 'a, PipeParamError>
 where
     P::State: Send,
     <P as PipeParam>::State: PipeParamState + 'static,
+    <<P as PipeParam>::State as PipeParamState>::Args: Sync,
 {
     let topic_param =
         match defined_kind {
@@ -82,46 +90,95 @@ where
             TopicParamKind::None => None,
         };
     let builder = args.to_param_builder(*arg_i, topic_param, pipe_args, defined_kind);
+    let index = *arg_i;
     *arg_i += 1;
-    Ok(<<P as PipeParam>::State as PipeParamState>::new(builder))
+    Ok(
+        <<P as PipeParam>::State as PipeParamState>::new(builder).map(move |x| {
+            x.map_err(|e| PipeParamError::Build {
+                source: e,
+                arg_i: index,
+                name: pipe_declaration.param_names[index].clone(),
+            })
+        }),
+    )
+}
+
+pub struct ParamGroupBuilder<Params> {
+    _t: PhantomData<Params>,
+}
+
+#[async_trait]
+pub trait Buildable: PipeParam {
+    async fn build(
+        args: &PipeFactoryArgs,
+        pipe_declaration: &DynPipeDeclaration,
+        arg_i: &mut usize,
+        reader_i: &mut usize,
+        writer_i: &mut usize,
+    ) -> Result<Self::State, PipeParamError>;
+}
+
+#[async_trait]
+impl<T> Buildable for T
+where
+    T: PipeParam,
+    <T as PipeParam>::State: PipeParamState + Send + 'static,
+{
+    async fn build(
+        args: &PipeFactoryArgs,
+        pipe_declaration: &DynPipeDeclaration,
+        arg_i: &mut usize,
+        reader_i: &mut usize,
+        writer_i: &mut usize,
+    ) -> Result<Self::State, PipeParamError> {
+        let mut pipe_args = &args.config.config.args[..];
+        build_param::<Self>(
+            &*pipe_declaration,
+            <Self::State as PipeParamState>::KIND,
+            &args,
+            &mut pipe_args,
+            arg_i,
+            writer_i,
+            reader_i,
+            Self::type_name(),
+        )?
+        .await
+    }
 }
 
 macro_rules! impl_build_params {
     ($($param:ident),*) => {
-        paste! {
-            pub struct [< P$( $param)* >];
-        }
-        paste! {
-            #[allow(non_snake_case)]
-            impl [< P$( $param)* >] {
-                pub async fn build_params<$($param),*>(args: PipeFactoryArgs) -> AnyResult<($(<$param as PipeParam>::State,)*), PipeParamError>
-                where
-                    $(
-                        $param: PipeParam + 'static,
-                        <$param as PipeParam>::State: PipeParamState + Send,
-                    )*
-                {
-                    let mut arg_i = 0;
-                    let mut reader_i = 0;
-                    let mut writer_i = 0;
-                    #[allow(unused_mut)]
-                    let mut pipe_args = &args.config.config.args[..];
+        #[async_trait]
+        impl<$($param),*> BuildableParams for ($($param,)*)
+        where
+            $(
+                $param: PipeParam + 'static,
+                <$param as PipeParam>::State: PipeParamState + Send,
+            )*
+//                        <<$param as PipeParam>::State as PipeParamState>::Args: Sync,
+        {
+            async fn build(args: PipeFactoryArgs, pipe_declaration: Arc<DynPipeDeclaration>) -> Result<Self::State, PipeParamError> {
+                let mut arg_i = 0;
+                let mut reader_i = 0;
+                let mut writer_i = 0;
+                #[allow(unused_mut)]
+                let mut pipe_args = &args.config.config.args[..];
 
-                    let result = futures_util::try_join!(
-                        $({
-                            build_param::<$param>(
-                                <$param::State as PipeParamState>::KIND,
-                                &args,
-                                &mut pipe_args,
-                                &mut arg_i,
-                                &mut writer_i,
-                                &mut reader_i,
-                                $param::type_name()
-                            )?
-                        }),*
-                    );
-                    result.map_err(|e| PipeParamError::Other(e))
-                }
+                let result = futures_util::try_join!(
+                    $({
+                        build_param::<$param>(
+                            &*pipe_declaration,
+                            <$param::State as PipeParamState>::KIND,
+                            &args,
+                            &mut pipe_args,
+                            &mut arg_i,
+                            &mut writer_i,
+                            &mut reader_i,
+                            $param::type_name()
+                        )?
+                    }),*
+                );
+                result
             }
         }
     };
@@ -153,7 +210,7 @@ impl<S: PipeParamStateImpl<'static> + Send> PipeParamState for S {
 }
 
 impl<S: PipeParamStateImpl<'static>> PipeObserver for S {
-    fn pipe_executing(&mut self) {
+    fn pipe_executing(&mut self) -> ControlFlow {
         S::pipe_executing(self)
     }
 

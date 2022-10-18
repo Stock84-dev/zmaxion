@@ -7,7 +7,7 @@ readme = "README.md"
 description = "Stream processing framework with ECS"
 repository = "https://github.com/Stock84-dev/zmaxion"
 license = "MIT OR Apache-2.0"
-categories = ["concurrency", "web-programming"]
+categories = ["concurrency", "web-programming", "event-driven"]
 keywords = ["stream", "processing", "engine", "data", "pipeline", "zmaxion"]
 
 [workspace]
@@ -23,3 +23,10 @@ zmaxion_dylib = { path = "crates/zmaxion_dylib", version = "0.1.0", default-feat
 [[example]]
 name = "pipe_showcase"
 path = "examples/pipe_showcase.rs"
+
+[dev-dependencies]
+zmaxion = { path = "../zmaxion", version = "0.1.0" }
+macrotest = "1.0.9"
+
+[profile.release]
+debug-assertions = true

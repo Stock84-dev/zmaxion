@@ -240,6 +240,10 @@ mod tests {
     }
 }
 
+pub enum WriterError {
+    NotReady,
+}
+
 // use std::{fmt::Debug, marker::PhantomData};
 //
 //// struct Push<T>(PhantomData<T>);

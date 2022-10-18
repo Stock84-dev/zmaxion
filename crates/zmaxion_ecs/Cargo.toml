@@ -1,0 +1,53 @@
+[package]
+name = "zmaxion_ecs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[features]
+trace = []
+default = ["bevy_reflect"]
+
+[dependencies]
+bevy_ptr = { version = "0.8.0", default-features = false }
+bevy_reflect = { version = "0.8.0", default-features = false, optional = true }
+bevy_tasks = { version = "0.8.0", default-features = false }
+bevy_utils = { version = "0.8.0", default-features = false }
+bevy_ecs_macros = { version = "0.8.0", default-features = false }
+
+zmaxion_utils = { path = "../zmaxion_utils" }
+vec_list = { path = "../vec_list" }
+zmaxion_rt = { path = "../zmaxion_rt" }
+ergnomics = { path = "../ergnomics" }
+atomic = "0.5.1"
+num_cpus = "1.13.1"
+futures = "0.3.24"
+pin-project = "1.0.10"
+
+async-channel = "1.4"
+thread_local = "1.1.4"
+fixedbitset = "0.4"
+fxhash = "0.2"
+downcast-rs = "1.2"
+serde = "1"
+rand = "0.8.5"
+
+[dev-dependencies]
+rand = "0.8"
+
+#[[example]]
+#name = "events"
+#path = "examples/events.rs"
+#
+#[[example]]
+#name = "resources"
+#path = "examples/resources.rs"
+#
+#[[example]]
+#name = "change_detection"
+#path = "examples/change_detection.rs"
+#
+#[[example]]
+#name = "derive_label"
+#path = "examples/derive_label.rs"
+

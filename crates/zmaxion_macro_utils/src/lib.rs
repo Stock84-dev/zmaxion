@@ -60,7 +60,7 @@ impl ZmaxionManifest {
             };
 
             let mut path = Self::parse_str::<syn::Path>(package);
-            if let Some(module) = name.strip_prefix("bevy_") {
+            if let Some(module) = name.strip_prefix("zmaxion_") {
                 path.segments.push(Self::parse_str(module));
             }
             Some(path)
